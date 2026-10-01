@@ -1,12 +1,13 @@
 .RECIPEPREFIX = >
 CC      = gcc
 LD      = ld
+EXTRA   =
 CFLAGS  = -std=gnu11 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
           -mno-red-zone -mcmodel=kernel -mgeneral-regs-only \
-          -fno-tree-loop-distribute-patterns -Wall -Wextra -Iinclude
+          -fno-tree-loop-distribute-patterns -Wall -Wextra -Iinclude $(EXTRA)
 LDFLAGS = -n -nostdlib -z max-page-size=0x1000 -T arch/x86_64/boot/linker.ld
 
-OBJS = build/boot.o build/main.o build/console.o build/pmm.o
+OBJS = build/boot.o build/isr.o build/main.o build/console.o build/pmm.o build/idt.o
 
 all: build/nethel.elf
 
@@ -14,7 +15,11 @@ build/boot.o: arch/x86_64/boot/boot.S
 > @mkdir -p build
 > $(CC) -c $< -o $@
 
-build/%.o: kernel/%.c
+build/%.o: kernel/%.S
+> @mkdir -p build
+> $(CC) -c $< -o $@
+
+build/%.o: kernel/%.c $(wildcard include/*.h)
 > @mkdir -p build
 > $(CC) $(CFLAGS) -c $< -o $@
 
