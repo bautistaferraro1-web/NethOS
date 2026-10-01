@@ -126,3 +126,19 @@ void pmm_free_page(uint64_t phys)
 
 uint64_t pmm_free_pages(void)  { return MAX_PAGES - used_pages; }
 uint64_t pmm_total_pages(void) { return MAX_PAGES; }
+
+uint64_t pmm_alloc_contiguous(uint64_t n)
+{
+    uint64_t run = 0, start = 0;
+    if (!n) return 0;
+    for (uint64_t i = 0; i < MAX_PAGES; i++) {
+        if (bit_get(i)) { run = 0; continue; }
+        if (run == 0) start = i;
+        if (++run == n) {
+            for (uint64_t j = start; j < start + n; j++) bit_set(j);
+            used_pages += n;
+            return start * PAGE_SIZE;
+        }
+    }
+    return 0;
+}
