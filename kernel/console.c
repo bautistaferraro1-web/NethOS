@@ -1,4 +1,5 @@
 #include "console.h"
+#include "cpu.h"
 
 #define VGA ((volatile uint16_t *)0xB8000)
 #define W 80
@@ -22,7 +23,7 @@ void console_clear(void)
     cx = cy = 0;
 }
 
-void console_putc(char c)
+static void putc_raw(char c)
 {
     if (c == '\n') { cx = 0; cy++; }
     else if (c == '\r') { cx = 0; }
@@ -38,7 +39,12 @@ void console_putc(char c)
     if (cy >= H) scroll();
 }
 
-void console_puts(const char *s) { while (*s) console_putc(*s++); }
+void console_puts(const char *s)
+{
+    uint64_t f = irq_save();
+    while (*s) putc_raw(*s++);
+    irq_restore(f);
+}
 
 void console_hex(uint64_t v)
 {
@@ -65,4 +71,11 @@ void console_status(const char *s)
     while (s[len]) len++;
     if (len > region) len = region;
     for (int i = 0; i < len; i++) VGA[W - len + i] = (0x1F << 8) | (uint8_t)s[i];
+}
+
+void console_putc(char c)
+{
+    uint64_t f = irq_save();
+    putc_raw(c);
+    irq_restore(f);
 }

@@ -1,4 +1,5 @@
 #include "heap.h"
+#include "cpu.h"
 #include "pmm.h"
 #include "console.h"
 
@@ -34,7 +35,7 @@ void heap_init(uint64_t pages)
     head->magic = MAGIC;
 }
 
-void *kmalloc(uint64_t size)
+static void *kmalloc_raw(uint64_t size)
 {
     if (!size || !head) return 0;
     size = (size + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
@@ -59,7 +60,7 @@ void *kmalloc(uint64_t size)
     return 0;
 }
 
-void kfree(void *p)
+static void kfree_raw(void *p)
 {
     if (!p) return;
 
@@ -99,4 +100,19 @@ uint64_t heap_free(void)
     uint64_t n = 0;
     for (struct block *b = head; b; b = b->next) if (b->free) n += b->size;
     return n;
+}
+
+void *kmalloc(uint64_t size)
+{
+    uint64_t f = irq_save();
+    void *p = kmalloc_raw(size);
+    irq_restore(f);
+    return p;
+}
+
+void kfree(void *p)
+{
+    uint64_t f = irq_save();
+    kfree_raw(p);
+    irq_restore(f);
 }

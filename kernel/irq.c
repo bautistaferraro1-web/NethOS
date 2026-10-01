@@ -41,7 +41,8 @@ void irq_register(int irq, irq_handler_t h)
 
 void irq_dispatch(int irq)
 {
-    if (handlers[irq]) handlers[irq]();
+    /* EOI primero: el handler del timer puede cambiar de tarea y no volver enseguida */
     if (irq >= 8) outb(PIC2, EOI);
     outb(PIC1, EOI);
+    if (handlers[irq]) handlers[irq]();
 }
