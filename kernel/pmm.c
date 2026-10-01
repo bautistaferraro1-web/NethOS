@@ -79,7 +79,7 @@ void pmm_init(uint64_t mb2_info)
                 console_puts(type_name(en->type));
                 console_putc('\n');
 
-                total_ram += en->length;
+                if (en->type == 1 || en->type == 3 || en->type == 4) total_ram += en->length;
                 if (en->type == 1) {
                     avail_ram += en->length;
                     mark_free(en->base, en->length);
