@@ -1,5 +1,6 @@
 #include "idt.h"
 #include "console.h"
+#include "irq.h"
 
 struct idt_entry {
     uint16_t off_lo;
@@ -16,7 +17,7 @@ struct idt_ptr {
     uint64_t base;
 } __attribute__((packed));
 
-extern uint64_t isr_table[32];
+extern uint64_t isr_table[48];
 static struct idt_entry idt[256];
 
 static const char *names[32] = {
@@ -44,7 +45,7 @@ static void set_gate(int n, uint64_t handler)
 
 void idt_init(void)
 {
-    for (int i = 0; i < 32; i++) set_gate(i, isr_table[i]);
+    for (int i = 0; i < 48; i++) set_gate(i, isr_table[i]);
 
     struct idt_ptr p = { sizeof(idt) - 1, (uint64_t)idt };
     __asm__ volatile("lidt %0" : : "m"(p));
@@ -59,6 +60,7 @@ static void row(const char *name, uint64_t v)
 
 void exception_handler(struct regs *r)
 {
+    if (r->vector >= 32 && r->vector < 48) { irq_dispatch(r->vector - 32); return; }
     uint64_t cr2;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
 

@@ -3,8 +3,56 @@
 #include "pmm.h"
 #include "idt.h"
 #include "heap.h"
+#include "irq.h"
+#include "timer.h"
+#include "keyboard.h"
 
 #define MB2_MAGIC 0x36D76289
+#define HZ        100
+
+static int streq(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static void status(uint64_t secs)
+{
+    char buf[32];
+    int i = 0;
+    const char *pre = " uptime: ";
+    while (*pre) buf[i++] = *pre++;
+    char tmp[21];
+    int t = 0;
+    if (!secs) tmp[t++] = '0';
+    while (secs) { tmp[t++] = '0' + (secs % 10); secs /= 10; }
+    while (t) buf[i++] = tmp[--t];
+    buf[i++] = 's';
+    buf[i++] = ' ';
+    buf[i] = 0;
+    console_status(buf);
+}
+
+static void run_command(const char *cmd)
+{
+    if (cmd[0] == 0) return;
+    if (streq(cmd, "help")) {
+        console_puts("Comandos: help  mem  uptime  clear\n");
+    } else if (streq(cmd, "mem")) {
+        console_puts("PMM libre: "); console_dec((pmm_free_pages() * PAGE_SIZE) >> 20);
+        console_puts(" MiB | Heap: usado "); console_dec(heap_used());
+        console_puts(" B, libre "); console_dec(heap_free() >> 10);
+        console_puts(" KiB\n");
+    } else if (streq(cmd, "uptime")) {
+        console_puts("Ticks: "); console_dec(timer_ticks());
+        console_puts(" ("); console_dec(timer_ticks() / HZ); console_puts(" s)\n");
+    } else if (streq(cmd, "clear")) {
+        console_clear();
+    } else {
+        console_puts("comando desconocido: "); console_puts(cmd);
+        console_puts("  (probá 'help')\n");
+    }
+}
 
 void kernel_main(uint64_t magic, uint64_t mb2_info)
 {
@@ -17,43 +65,18 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
     }
 
     idt_init();
-    console_puts("IDT: OK (excepciones 0-31)\n\n");
+    console_puts("IDT: OK (excepciones + IRQ 0-47)\n\n");
 
     pmm_init(mb2_info);
-
-    uint64_t a = pmm_alloc_page();
-    uint64_t b = pmm_alloc_page();
-    console_puts("\nalloc_page: "); console_hex(a);
-    console_puts("\nalloc_page: "); console_hex(b);
-    pmm_free_page(a);
-    uint64_t c = pmm_alloc_page();
-    console_puts("\nfree+alloc: "); console_hex(c);
-    console_puts(c == a ? "  (reutilizada OK)\n" : "  (?)\n");
-
-    /* Heap de 4 MiB (1024 paginas contiguas) */
-    heap_init(1024);
+    heap_init(1024);                         /* 4 MiB */
     console_puts("\nHeap: "); console_dec(heap_free() >> 10);
     console_puts(" KiB libres\n");
 
-    char *p1 = kmalloc(100);
-    char *p2 = kmalloc(5000);
-    char *p3 = kmalloc(32);
-    console_puts("kmalloc 100:  "); console_hex((uint64_t)p1);
-    console_puts("\nkmalloc 5000: "); console_hex((uint64_t)p2);
-    console_puts("\nkmalloc 32:   "); console_hex((uint64_t)p3);
-
-    for (int i = 0; i < 100; i++) p1[i] = 'N';
-    p1[99] = 0;
-
-    kfree(p2);
-    char *p4 = kmalloc(4000);                /* debe reutilizar el hueco de p2 */
-    console_puts("\nfree p2 + kmalloc 4000: "); console_hex((uint64_t)p4);
-    console_puts(p4 == p2 ? "  (hueco reutilizado OK)\n" : "  (?)\n");
-
-    kfree(p1); kfree(p3); kfree(p4);         /* todo libre: debe fusionarse */
-    console_puts("Tras liberar todo: usado="); console_dec(heap_used());
-    console_puts(" B, libre="); console_dec(heap_free() >> 10);
-    console_puts(" KiB\n");
+    pic_init();
+    timer_init(HZ);
+    keyboard_init();
+    __asm__ volatile("sti");
+    console_puts("PIC + timer (100 Hz) + teclado: OK\n");
 
 #ifdef TEST_PF
     console_puts("\nProvocando page fault en 0x40000000...\n");
@@ -66,5 +89,31 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
     (void)r;
 #endif
 
-    for (;;) __asm__ volatile("hlt");
+    console_puts("\nNethel listo. Escribi 'help'.\n> ");
+
+    char line[80];
+    int len = 0;
+    uint64_t last_sec = (uint64_t)-1;
+
+    for (;;) {
+        uint64_t sec = timer_ticks() / HZ;
+        if (sec != last_sec) { last_sec = sec; status(sec); }
+
+        int c;
+        while ((c = keyboard_getc()) >= 0) {
+            if (c == '\n') {
+                console_putc('\n');
+                line[len] = 0;
+                run_command(line);
+                len = 0;
+                console_puts("> ");
+            } else if (c == '\b') {
+                if (len > 0) { len--; console_putc('\b'); }
+            } else if (c >= 32 && len < (int)sizeof(line) - 1) {
+                line[len++] = (char)c;
+                console_putc((char)c);
+            }
+        }
+        __asm__ volatile("hlt");             /* dormir hasta la proxima interrupcion */
+    }
 }
