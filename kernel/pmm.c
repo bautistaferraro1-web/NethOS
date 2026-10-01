@@ -1,8 +1,8 @@
 #include "pmm.h"
 #include "console.h"
 
-/* boot.S solo mapea 1 GiB (identity), asi que el PMM maneja 1 GiB por ahora */
-#define MAX_MEM    (1ULL << 30)
+/* vmm_init() mapea 4 GiB (identidad); el PMM maneja hasta 4 GiB */
+#define MAX_MEM    (4ULL << 30)
 #define MAX_PAGES  (MAX_MEM / PAGE_SIZE)
 
 extern char kernel_end[];
@@ -97,7 +97,7 @@ void pmm_init(uint64_t mb2_info)
     console_puts(" MiB\nAvailable:       "); console_dec(avail_ram >> 20);
     console_puts(" MiB\nPMM free pages:  "); console_dec(pmm_free_pages());
     console_puts(" (");  console_dec((pmm_free_pages() * PAGE_SIZE) >> 20);
-    console_puts(" MiB, limitado a 1 GiB)\n");
+    console_puts(" MiB, limitado a 4 GiB)\n");
 }
 
 uint64_t pmm_alloc_page(void)

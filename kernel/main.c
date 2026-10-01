@@ -3,6 +3,7 @@
 #include "pmm.h"
 #include "idt.h"
 #include "heap.h"
+#include "vmm.h"
 #include "irq.h"
 #include "timer.h"
 #include "keyboard.h"
@@ -68,6 +69,8 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
     console_puts("IDT: OK (excepciones + IRQ 0-47)\n\n");
 
     pmm_init(mb2_info);
+    vmm_init();
+    vmm_selftest();
     heap_init(1024);                         /* 4 MiB */
     console_puts("\nHeap: "); console_dec(heap_free() >> 10);
     console_puts(" KiB libres\n");
@@ -79,8 +82,8 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
     console_puts("PIC + timer (100 Hz) + teclado: OK\n");
 
 #ifdef TEST_PF
-    console_puts("\nProvocando page fault en 0x40000000...\n");
-    *(volatile uint64_t *)0x40000000ULL = 1;
+    console_puts("\nProvocando page fault en 0x200000000...\n");
+    *(volatile uint64_t *)0x200000000ULL = 1;
 #endif
 #ifdef TEST_DE
     console_puts("\nProvocando division por cero...\n");
