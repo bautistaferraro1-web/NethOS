@@ -8,8 +8,7 @@
 #define USER_CODE  0x0000008000000000ULL   /* fuera de la identidad de 4 GiB */
 #define USER_STACK 0x0000008000100000ULL   /* base de la pagina; el tope es +4096 */
 
-/* Programa de usuario provisorio: jmp . (loop infinito) */
-static const uint8_t user_prog[] = { 0xEB, 0xFE };
+extern const uint8_t uprog_start[], uprog_end[];
 
 static void zero_page(uint64_t phys)
 {
@@ -25,10 +24,13 @@ static void user_task(void *arg)
     uint64_t stack = pmm_alloc_page();
     if (!code || !stack) { console_puts("user: sin memoria\n"); return; }
 
+    uint64_t size = (uint64_t)(uprog_end - uprog_start);
+    if (size > 4096) { console_puts("user: programa muy grande\n"); return; }
+
     zero_page(code);
     zero_page(stack);
-    for (uint64_t i = 0; i < sizeof(user_prog); i++)
-        ((volatile uint8_t *)code)[i] = user_prog[i];   /* identidad: escribo por la fisica */
+    for (uint64_t i = 0; i < size; i++)
+        ((volatile uint8_t *)code)[i] = uprog_start[i];   /* identidad: escribo por la fisica */
 
     if (vmm_map(USER_CODE, code, VMM_USER) ||
         vmm_map(USER_STACK, stack, VMM_USER | VMM_WRITE)) {
@@ -36,8 +38,6 @@ static void user_task(void *arg)
         return;
     }
 
-    /* Las interrupciones desde Ring 3 van a caer en este stack, por debajo
-       del frame actual (nunca volvemos a esta funcion). */
     uint64_t rsp0;
     __asm__ volatile("mov %%rsp, %0" : "=r"(rsp0));
     gdt_set_kernel_stack(rsp0 & ~0xFULL);

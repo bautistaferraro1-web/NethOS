@@ -68,3 +68,11 @@ isr_table:
 .endr
 
 .section .note.GNU-stack,"",@progbits
+
+.section .text
+.code64
+.global isr128
+isr128:
+    pushq $0
+    pushq $128
+    jmp isr_common
