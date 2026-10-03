@@ -3,7 +3,9 @@
 #include "sched.h"
 #include "vmm.h"
 #include "user.h"
+#include "keyboard.h"
 
+#define SYS_READ  0
 #define SYS_WRITE 1
 #define SYS_YIELD 24
 #define SYS_EXIT  60
@@ -37,9 +39,29 @@ static uint64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len)
     return len;
 }
 
+/* Bloquea hasta que haya al menos una tecla; devuelve lo que haya (max len) */
+static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len)
+{
+    if (fd != 0) return ERR(EBADF);
+    if (len > MAXW) len = MAXW;
+    if (len == 0) return 0;
+    if (!user_range_ok(buf, len)) return ERR(EFAULT);
+
+    int c;
+    while ((c = keyboard_getc()) < 0)
+        __asm__ volatile("sti; hlt; cli" : : : "memory");   /* dormir hasta una IRQ */
+
+    char *d = (char *)buf;
+    uint64_t n = 0;
+    d[n++] = (char)c;
+    while (n < len && (c = keyboard_getc()) >= 0) d[n++] = (char)c;
+    return n;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
+    case SYS_READ:  r->rax = sys_read(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITE: r->rax = sys_write(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
     case SYS_EXIT:

@@ -10,11 +10,14 @@
 #define USER_CODE  0x0000008000000000ULL
 #define USER_STACK 0x0000008000100000ULL   /* base de la pagina; el tope es +4096 */
 
-enum { PROG_ASM, PROG_CRASH, PROG_ELF };
+enum { PROG_ASM, PROG_CRASH, PROG_HELLO, PROG_ECHO };
 
 extern const uint8_t uprog_start[], uprog_end[];
 extern const uint8_t ucrash_start[], ucrash_end[];
 extern const uint8_t _binary_hello_elf_start[], _binary_hello_elf_end[];
+extern const uint8_t _binary_echo_elf_start[], _binary_echo_elf_end[];
+
+static volatile int fg;                    /* procesos de usuario vivos */
 
 static void zero_page(uint64_t phys)
 {
@@ -42,6 +45,11 @@ static int load_blob(uint64_t sp, const uint8_t *start, const uint8_t *end, uint
     return 0;
 }
 
+static int load_elf(uint64_t sp, const uint8_t *s, const uint8_t *e, uint64_t *entry)
+{
+    return elf_load(s, (uint64_t)(e - s), sp, USER_CODE, USER_STACK, entry);
+}
+
 /* Se llama con interrupciones desactivadas (el PMM no es seguro con preemption) */
 static int user_setup(int which, uint64_t *entry)
 {
@@ -56,14 +64,12 @@ static int user_setup(int which, uint64_t *entry)
     zero_page(stack);
 
     int rc;
-    if (which == PROG_ELF)
-        rc = elf_load(_binary_hello_elf_start,
-                      (uint64_t)(_binary_hello_elf_end - _binary_hello_elf_start),
-                      sp, USER_CODE, USER_STACK, entry);
-    else if (which == PROG_CRASH)
-        rc = load_blob(sp, ucrash_start, ucrash_end, entry);
-    else
-        rc = load_blob(sp, uprog_start, uprog_end, entry);
+    switch (which) {
+    case PROG_HELLO: rc = load_elf(sp, _binary_hello_elf_start, _binary_hello_elf_end, entry); break;
+    case PROG_ECHO:  rc = load_elf(sp, _binary_echo_elf_start,  _binary_echo_elf_end,  entry); break;
+    case PROG_CRASH: rc = load_blob(sp, ucrash_start, ucrash_end, entry); break;
+    default:         rc = load_blob(sp, uprog_start,  uprog_end,  entry); break;
+    }
 
     if (!rc && vmm_map_in(sp, USER_STACK, stack, VMM_USER | VMM_WRITE)) {
         console_puts("user: vmm_map del stack fallo\n");
@@ -79,12 +85,16 @@ static int user_setup(int which, uint64_t *entry)
     return 0;
 }
 
+/* La llaman exit y el handler de excepciones, siempre con IF=0 */
 void user_cleanup(void)
 {
     uint64_t sp = task_get_space();
     task_set_space(vmm_kernel_space());
     if (sp != vmm_kernel_space()) vmm_destroy_space(sp);
+    if (fg > 0) fg--;
 }
+
+int user_foreground(void) { return fg > 0; }
 
 static void user_task(void *arg)
 {
@@ -93,6 +103,7 @@ static void user_task(void *arg)
 
     uint64_t f = irq_save();
     int rc = user_setup(which, &entry);
+    if (rc && fg > 0) fg--;                   /* no llego a ser proceso */
     irq_restore(f);
     if (rc) return;
 
@@ -113,6 +124,23 @@ static void user_task(void *arg)
     for (;;) __asm__ volatile("hlt");
 }
 
-int user_spawn(void)       { return task_create("user",  user_task, (void *)(uint64_t)PROG_ASM); }
-int user_spawn_crash(void) { return task_create("crash", user_task, (void *)(uint64_t)PROG_CRASH); }
-int user_spawn_elf(void)   { return task_create("hello", user_task, (void *)(uint64_t)PROG_ELF); }
+/* fg se sube al crear la tarea, asi el shell no se queda con teclas del proceso */
+static int spawn(const char *name, int which)
+{
+    uint64_t f = irq_save();
+    fg++;
+    irq_restore(f);
+
+    int id = task_create(name, user_task, (void *)(uint64_t)which);
+    if (id < 0) {
+        f = irq_save();
+        fg--;
+        irq_restore(f);
+    }
+    return id;
+}
+
+int user_spawn(void)       { return spawn("user",  PROG_ASM); }
+int user_spawn_crash(void) { return spawn("crash", PROG_CRASH); }
+int user_spawn_elf(void)   { return spawn("hello", PROG_HELLO); }
+int user_spawn_echo(void)  { return spawn("echo",  PROG_ECHO); }
