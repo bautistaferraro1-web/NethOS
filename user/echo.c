@@ -9,7 +9,7 @@ void _start(void)
     char line[80];
     int len = 0;
 
-    print("[echo.elf] escribi una linea y Enter. 'salir' para terminar.\n> ");
+    print("[echo.elf] escribi una linea y Enter. 'salir' o 'exit' para terminar.\n> ");
 
     for (;;) {
         char c;
@@ -20,7 +20,7 @@ void _start(void)
         if (c == '\n') {
             sys_write(1, &c, 1);
             line[len] = 0;
-            if (streq(line, "salir")) break;
+            if (streq(line, "salir") || streq(line, "exit")) break;
             lineas++;
             print("tu escribiste ("); print_num((u64)len); print(" chars): ");
             print(line); print("\n> ");
