@@ -2,6 +2,9 @@
 #include "heap.h"
 #include "cpu.h"
 #include "console.h"
+#ifndef HOST_TEST
+#include "gdt.h"
+#endif
 
 #define STACK_SIZE   16384
 #define SLICE_TICKS  10                 /* 100 ms a 100 Hz */
@@ -76,6 +79,9 @@ static void schedule(void)
     if (prev->state == T_RUNNING) prev->state = T_READY;
     n->state = T_RUNNING;
     current = n;
+#ifndef HOST_TEST
+    if (n->stack) gdt_set_kernel_stack(((uint64_t)n->stack + STACK_SIZE) & ~0xFULL);
+#endif
     switch_context(&prev->rsp, n->rsp);
 }
 

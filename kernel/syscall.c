@@ -2,6 +2,7 @@
 #include "console.h"
 #include "sched.h"
 #include "vmm.h"
+#include "user.h"
 
 #define SYS_WRITE 1
 #define SYS_YIELD 24
@@ -43,7 +44,9 @@ void syscall_dispatch(struct regs *r)
     case SYS_YIELD: yield(); r->rax = 0; break;
     case SYS_EXIT:
         console_puts("[kernel] user exit("); console_dec(r->rdi); console_puts(")\n");
-        for (;;) yield();                  /* provisorio: falta liberar la tarea */
+        user_cleanup();
+        task_exit();
+        for (;;) __asm__ volatile("hlt");
     default:
         r->rax = ERR(38);                  /* ENOSYS */
     }
