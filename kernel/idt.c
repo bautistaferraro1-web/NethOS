@@ -2,6 +2,8 @@
 #include "console.h"
 #include "irq.h"
 #include "syscall.h"
+#include "sched.h"
+#include "user.h"
 
 struct idt_entry {
     uint16_t off_lo;
@@ -68,6 +70,16 @@ void exception_handler(struct regs *r)
     if (r->vector >= 32 && r->vector < 48) { irq_dispatch(r->vector - 32); return; }
     uint64_t cr2;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    if ((r->cs & 3) == 3) {                 /* fallo en Ring 3: matar solo al proceso */
+        console_puts("\n[kernel] proceso de usuario muerto: ");
+        console_puts(r->vector < 32 ? names[r->vector] : "Unknown");
+        console_puts("\n  RIP="); console_hex(r->rip);
+        console_puts(" CR2="); console_hex(cr2);
+        console_puts(" ERR="); console_hex(r->error);
+        console_putc(0x0A);
+        user_cleanup();
+        task_exit();
+    }
 
     console_set_color(15, 4);
     console_puts("\n*** NETHEL EXCEPTION ***");

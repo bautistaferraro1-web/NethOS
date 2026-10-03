@@ -31,3 +31,25 @@ msg2_end:
 uprog_end:
 
 .section .note.GNU-stack,"",@progbits
+
+.section .rodata
+.code64
+.global ucrash_start
+.global ucrash_end
+
+ucrash_start:
+    mov  $1, %eax
+    mov  $1, %edi
+    lea  cmsg(%rip), %rsi
+    mov  $(cmsg_end - cmsg), %edx
+    int  $0x80
+
+    mov  $0x100000, %eax           /* memoria del kernel: sin bit U */
+    mov  (%rax), %rax              /* -> #PF desde Ring 3 */
+1:  jmp  1b
+
+cmsg: .ascii "[user] voy a leer memoria del kernel...\n"
+cmsg_end:
+ucrash_end:
+
+.section .note.GNU-stack,"",@progbits

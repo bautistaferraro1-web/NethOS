@@ -10,6 +10,7 @@
 #define USER_STACK 0x0000008000100000ULL   /* base de la pagina; el tope es +4096 */
 
 extern const uint8_t uprog_start[], uprog_end[];
+extern const uint8_t ucrash_start[], ucrash_end[];
 
 static void zero_page(uint64_t phys)
 {
@@ -27,9 +28,11 @@ static void fail(const char *msg, uint64_t sp, uint64_t code, uint64_t stack)
 }
 
 /* Se llama con interrupciones desactivadas (el PMM no es seguro con preemption) */
-static int user_setup(void)
+static int user_setup(int which)
 {
-    uint64_t size = (uint64_t)(uprog_end - uprog_start);
+    const uint8_t *start = which ? ucrash_start : uprog_start;
+    const uint8_t *end   = which ? ucrash_end   : uprog_end;
+    uint64_t size = (uint64_t)(end - start);
     if (size > 4096) { console_puts("user: programa muy grande\n"); return -1; }
 
     uint64_t sp    = vmm_create_space();
@@ -40,7 +43,7 @@ static int user_setup(void)
     zero_page(code);
     zero_page(stack);
     for (uint64_t i = 0; i < size; i++)
-        ((volatile uint8_t *)code)[i] = uprog_start[i];   /* identidad: escribo por la fisica */
+        ((volatile uint8_t *)code)[i] = start[i];   /* identidad: escribo por la fisica */
 
     if (vmm_map_in(sp, USER_CODE, code, VMM_USER)) {
         fail("user: vmm_map fallo\n", sp, code, stack);
@@ -65,10 +68,10 @@ void user_cleanup(void)
 
 static void user_task(void *arg)
 {
-    (void)arg;
+
 
     uint64_t f = irq_save();
-    int rc = user_setup();
+    int rc = user_setup((int)(uint64_t)arg);
     irq_restore(f);
     if (rc) return;
 
@@ -90,3 +93,4 @@ static void user_task(void *arg)
 }
 
 int user_spawn(void) { return task_create("user", user_task, 0); }
+int user_spawn_crash(void) { return task_create("crash", user_task, (void *)1); }
