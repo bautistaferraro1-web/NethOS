@@ -1,0 +1,20 @@
+ENTRY(_start)
+
+PHDRS {
+    text   PT_LOAD FLAGS(5);   /* R+X */
+    rodata PT_LOAD FLAGS(4);   /* R   */
+    data   PT_LOAD FLAGS(6);   /* R+W */
+}
+
+SECTIONS
+{
+    . = 0x8000000000;
+    .text   : { *(.text*) } :text
+    . = ALIGN(4096);
+    .rodata : { *(.rodata*) } :rodata
+    . = ALIGN(4096);
+    .data   : { *(.data*) } :data
+    .bss    : { *(.bss*) *(COMMON) } :data
+
+    /DISCARD/ : { *(.note*) *(.comment*) *(.eh_frame*) }
+}

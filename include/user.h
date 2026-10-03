@@ -1,10 +1,10 @@
 #ifndef NETHEL_USER_H
 #define NETHEL_USER_H
 
-/* Crea una tarea que entra a Ring 3. Devuelve el id o -1 */
-int  user_spawn(void);
-int  user_spawn_crash(void);
-/* Desmapea y libera las paginas del proceso de usuario (la llama exit) */
+int  user_spawn(void);          /* programa en assembly pegado al kernel */
+int  user_spawn_crash(void);    /* programa que provoca un #PF en Ring 3 */
+int  user_spawn_elf(void);      /* hello.elf, cargado con el cargador ELF */
+/* Vuelve al espacio del kernel y libera el del proceso (la llama exit) */
 void user_cleanup(void);
 
 #endif
