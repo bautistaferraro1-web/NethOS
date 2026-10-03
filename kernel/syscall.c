@@ -9,12 +9,15 @@
 #define SYS_WRITE 1
 #define SYS_YIELD 24
 #define SYS_EXIT  60
+#define SYS_SPAWN 500                      /* propias de Nethel */
+#define SYS_WAIT  501
 
 #define UBASE 0x0000008000000000ULL        /* region de usuario */
 #define UEND  0x0000008000200000ULL
 #define MAXW  256
 
 #define ERR(n) ((uint64_t)-(int64_t)(n))
+#define ENOENT 2
 #define EBADF  9
 #define EFAULT 14
 
@@ -58,12 +61,43 @@ static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len)
     return n;
 }
 
+/* Copia un nombre del usuario (max 15 chars), validando cada byte */
+static int copy_name(char *dst, uint64_t src)
+{
+    for (int i = 0; i < 15; i++) {
+        if (!user_range_ok(src + i, 1)) return -1;
+        dst[i] = ((const char *)src)[i];
+        if (!dst[i]) return 0;
+    }
+    dst[15] = 0;
+    return 0;
+}
+
+static uint64_t sys_spawn(uint64_t uname)
+{
+    char name[16];
+    if (copy_name(name, uname)) return ERR(EFAULT);
+    int id = user_spawn_name(name);
+    return id < 0 ? ERR(ENOENT) : (uint64_t)id;
+}
+
+static uint64_t sys_wait(uint64_t id)
+{
+    while (task_alive((int)id)) {
+        yield();
+        __asm__ volatile("sti; hlt; cli" : : : "memory");
+    }
+    return 0;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
     case SYS_READ:  r->rax = sys_read(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITE: r->rax = sys_write(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
+    case SYS_SPAWN: r->rax = sys_spawn(r->rdi); break;
+    case SYS_WAIT:  r->rax = sys_wait(r->rdi); break;
     case SYS_EXIT:
         console_puts("[kernel] user exit("); console_dec(r->rdi); console_puts(")\n");
         user_cleanup();

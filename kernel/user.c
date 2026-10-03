@@ -6,16 +6,16 @@
 #include "sched.h"
 #include "console.h"
 #include "elf.h"
+#include "progs.h"
 
 #define USER_CODE  0x0000008000000000ULL
 #define USER_STACK 0x0000008000100000ULL   /* base de la pagina; el tope es +4096 */
 
-enum { PROG_ASM, PROG_CRASH, PROG_HELLO, PROG_ECHO };
+/* which: 0 = asm, 1 = crash, 2+i = programa i de la tabla */
+enum { PROG_ASM, PROG_CRASH, PROG_TABLE };
 
 extern const uint8_t uprog_start[], uprog_end[];
 extern const uint8_t ucrash_start[], ucrash_end[];
-extern const uint8_t _binary_hello_elf_start[], _binary_hello_elf_end[];
-extern const uint8_t _binary_echo_elf_start[], _binary_echo_elf_end[];
 
 static volatile int fg;                    /* procesos de usuario vivos */
 
@@ -64,11 +64,13 @@ static int user_setup(int which, uint64_t *entry)
     zero_page(stack);
 
     int rc;
-    switch (which) {
-    case PROG_HELLO: rc = load_elf(sp, _binary_hello_elf_start, _binary_hello_elf_end, entry); break;
-    case PROG_ECHO:  rc = load_elf(sp, _binary_echo_elf_start,  _binary_echo_elf_end,  entry); break;
-    case PROG_CRASH: rc = load_blob(sp, ucrash_start, ucrash_end, entry); break;
-    default:         rc = load_blob(sp, uprog_start,  uprog_end,  entry); break;
+    if (which >= PROG_TABLE) {
+        const struct prog *p = prog_at(which - PROG_TABLE);
+        rc = p ? load_elf(sp, p->start, p->end, entry) : -1;
+    } else if (which == PROG_CRASH) {
+        rc = load_blob(sp, ucrash_start, ucrash_end, entry);
+    } else {
+        rc = load_blob(sp, uprog_start, uprog_end, entry);
     }
 
     if (!rc && vmm_map_in(sp, USER_STACK, stack, VMM_USER | VMM_WRITE)) {
@@ -108,8 +110,6 @@ static void user_task(void *arg)
     if (rc) return;
 
     /* rsp0 ya lo dejo puesto schedule() al entrar a esta tarea */
-    console_puts("user: entrando a ring 3\n");
-
     __asm__ volatile(
         "cli\n\t"
         "pushq %0\n\t"          /* SS     */
@@ -124,7 +124,7 @@ static void user_task(void *arg)
     for (;;) __asm__ volatile("hlt");
 }
 
-/* fg se sube al crear la tarea, asi el shell no se queda con teclas del proceso */
+/* fg se sube al crear la tarea, asi el shell del kernel no se queda con teclas del proceso */
 static int spawn(const char *name, int which)
 {
     uint64_t f = irq_save();
@@ -142,5 +142,10 @@ static int spawn(const char *name, int which)
 
 int user_spawn(void)       { return spawn("user",  PROG_ASM); }
 int user_spawn_crash(void) { return spawn("crash", PROG_CRASH); }
-int user_spawn_elf(void)   { return spawn("hello", PROG_HELLO); }
-int user_spawn_echo(void)  { return spawn("echo",  PROG_ECHO); }
+
+int user_spawn_name(const char *name)
+{
+    int i = prog_find(name);
+    if (i < 0) return -1;
+    return spawn(prog_at(i)->name, PROG_TABLE + i);
+}

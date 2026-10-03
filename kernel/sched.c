@@ -197,3 +197,17 @@ void task_set_space(uint64_t space)
 
 uint64_t task_get_space(void) { return current->cr3; }
 #endif
+
+int task_alive(int id)
+{
+    if (!current) return 0;
+    uint64_t f = irq_save();
+    int alive = 0;
+    struct task *t = current;
+    do {
+        if ((int)t->id == id && t->state != T_DEAD) { alive = 1; break; }
+        t = t->next;
+    } while (t != current);
+    irq_restore(f);
+    return alive;
+}

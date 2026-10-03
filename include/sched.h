@@ -11,6 +11,7 @@ void task_exit(void);                                      /* terminar la tarea 
 void sched_tick(void);                                     /* lo llama el timer */
 void sched_list(void);                                     /* imprime las tareas */
 int  sched_task_count(void);                               /* tareas vivas */
+int  task_alive(int id);                                   /* 1 si la tarea existe y no termino */
 void     task_set_space(uint64_t space);                   /* espacio de la tarea actual */
 uint64_t task_get_space(void);
 

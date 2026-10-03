@@ -7,7 +7,7 @@ CFLAGS  = -std=gnu11 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
           -fno-tree-loop-distribute-patterns -Wall -Wextra -Iinclude $(EXTRA)
 LDFLAGS = -n -nostdlib -z max-page-size=0x1000 -T arch/x86_64/boot/linker.ld
 
-OBJS = build/boot.o build/isr.o build/main.o build/console.o build/pmm.o build/idt.o build/heap.o build/irq.o build/timer.o build/keyboard.o build/vmm.o build/switch.o build/sched.o build/gdt.o build/user.o build/syscall.o build/uprog.o build/elf.o build/hello_elf.o build/echo_elf.o
+OBJS = build/boot.o build/isr.o build/main.o build/console.o build/pmm.o build/idt.o build/heap.o build/irq.o build/timer.o build/keyboard.o build/vmm.o build/switch.o build/sched.o build/gdt.o build/user.o build/syscall.o build/uprog.o build/elf.o build/hello_elf.o build/echo_elf.o build/progs.o build/nsh_elf.o
 
 all: build/nethel.elf
 
@@ -59,3 +59,13 @@ build/echo.elf: build/echo.o user/user.ld
 
 build/echo_elf.o: build/echo.elf
 > cd build && ld -r -b binary -z noexecstack -o echo_elf.o echo.elf
+
+build/nsh.o: user/nsh.c user/nlib.h Makefile
+> mkdir -p build
+> gcc -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-stack-protector -mgeneral-regs-only -fno-tree-loop-distribute-patterns -Wall -Wextra -c user/nsh.c -o build/nsh.o
+
+build/nsh.elf: build/nsh.o user/user.ld
+> ld -nostdlib -z max-page-size=0x1000 -T user/user.ld -o build/nsh.elf build/nsh.o
+
+build/nsh_elf.o: build/nsh.elf
+> cd build && ld -r -b binary -z noexecstack -o nsh_elf.o nsh.elf
