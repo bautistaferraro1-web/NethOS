@@ -4,6 +4,7 @@
 #include "console.h"
 #ifndef HOST_TEST
 #include "gdt.h"
+#include "vmm.h"
 #endif
 
 #define STACK_SIZE   16384
@@ -18,6 +19,7 @@ struct task {
     uint64_t rsp;
     uint8_t *stack;                     /* 0 para la tarea de arranque */
     uint64_t ticks;
+    uint64_t cr3;                       /* espacio de direcciones */
     struct task *next;                  /* lista circular */
 };
 
@@ -45,6 +47,9 @@ void sched_init(void)
     t->rsp = 0;
     t->stack = 0;
     t->ticks = 0;
+#ifndef HOST_TEST
+    t->cr3 = vmm_kernel_space();
+#endif
     t->next = t;
     current = t;
 }
@@ -81,6 +86,7 @@ static void schedule(void)
     current = n;
 #ifndef HOST_TEST
     if (n->stack) gdt_set_kernel_stack(((uint64_t)n->stack + STACK_SIZE) & ~0xFULL);
+    vmm_switch(n->cr3);
 #endif
     switch_context(&prev->rsp, n->rsp);
 }
@@ -109,6 +115,9 @@ int task_create(const char *name, task_fn fn, void *arg)
     t->rsp = (uint64_t)sp;
     t->stack = stack;
     t->ticks = 0;
+#ifndef HOST_TEST
+    t->cr3 = vmm_kernel_space();
+#endif
 
     uint64_t f = irq_save();
     t->id = next_id++;
@@ -175,3 +184,16 @@ void sched_list(void)
     }
     irq_restore(f);
 }
+
+#ifndef HOST_TEST
+/* Cambia el espacio de direcciones de la tarea actual (y lo activa) */
+void task_set_space(uint64_t space)
+{
+    uint64_t f = irq_save();
+    current->cr3 = space;
+    vmm_switch(space);
+    irq_restore(f);
+}
+
+uint64_t task_get_space(void) { return current->cr3; }
+#endif

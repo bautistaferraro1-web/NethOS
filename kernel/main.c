@@ -81,7 +81,7 @@ static void run_command(const char *cmd)
 {
     if (cmd[0] == 0) return;
     if (streq(cmd, "help")) {
-        console_puts("Comandos: help  mem  uptime  ps  spawn  user  clear\n");
+        console_puts("Comandos: help  mem  uptime  ps  spawn  user  user2  clear\n");
     } else if (streq(cmd, "mem")) {
         console_puts("PMM libre: "); console_dec((pmm_free_pages() * PAGE_SIZE) >> 20);
         console_puts(" MiB | Heap: usado "); console_dec(heap_used());
@@ -96,6 +96,9 @@ static void run_command(const char *cmd)
         int id = task_create("contador", counter_task, (void *)++spawn_n);
         if (id < 0) console_puts("no se pudo crear la tarea\n");
         else { console_puts("tarea creada, id "); console_dec((uint64_t)id); console_putc('\n'); }
+    } else if (streq(cmd, "user2")) {
+        user_spawn();
+        user_spawn();
     } else if (streq(cmd, "user")) {
         user_spawn();
     } else if (streq(cmd, "clear")) {

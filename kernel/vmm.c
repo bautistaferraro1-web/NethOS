@@ -16,7 +16,8 @@ static inline void invlpg(uint64_t v)   { __asm__ volatile("invlpg (%0)" : : "r"
 static inline void load_cr3(uint64_t p) { __asm__ volatile("mov %0, %%cr3" : : "r"(p) : "memory"); }
 #endif
 
-static uint64_t *pml4;
+static uint64_t *kpml4;                         /* espacio del kernel */
+static uint64_t *cur;                           /* espacio activo (el que esta en CR3) */
 
 static void vmm_panic(const char *msg)
 {
@@ -66,9 +67,9 @@ static uint64_t *descend(uint64_t *tbl, uint64_t idx, int create, uint64_t flags
     return n;
 }
 
-static uint64_t *get_pt(uint64_t virt, int create, uint64_t flags)
+static uint64_t *get_pt(uint64_t *root, uint64_t virt, int create, uint64_t flags)
 {
-    uint64_t *pdpt = descend(pml4, IDX(virt, 3), create, flags);
+    uint64_t *pdpt = descend(root, IDX(virt, 3), create, flags);
     if (!pdpt) return 0;
     uint64_t *pd = descend(pdpt, IDX(virt, 2), create, flags);
     if (!pd) return 0;
@@ -84,20 +85,23 @@ static int valid_virt(uint64_t v)
     return (v & 0xFFF) == 0 && (top == 0 || top == 0x1FFFF);
 }
 
-int vmm_map(uint64_t virt, uint64_t phys, uint64_t flags)
+static int map_in(uint64_t *root, uint64_t virt, uint64_t phys, uint64_t flags)
 {
     if (!valid_virt(virt) || (phys & 0xFFF)) return -1;
-    uint64_t *pt = get_pt(virt, 1, flags);
+    /* La identidad (pml4[0]) es compartida: tocarla desde un espacio de usuario
+       partiria paginas de 2 MiB que usan todos los procesos y el kernel. */
+    if (root != kpml4 && IDX(virt, 3) == 0) return -1;
+    uint64_t *pt = get_pt(root, virt, 1, flags);
     if (!pt) return -1;
     pt[IDX(virt, 0)] = (phys & ADDR_MASK) | (flags & 0xFFF) | VMM_PRESENT;
     invlpg(virt);
     return 0;
 }
 
-int vmm_unmap(uint64_t virt)
+static int unmap_in(uint64_t *root, uint64_t virt)
 {
     if (!valid_virt(virt)) return -1;
-    uint64_t *pt = get_pt(virt, 0, 0);
+    uint64_t *pt = get_pt(root, virt, 0, 0);
     if (!pt) return -1;
     uint64_t i = IDX(virt, 0);
     if (!(pt[i] & VMM_PRESENT)) return -1;
@@ -106,9 +110,9 @@ int vmm_unmap(uint64_t virt)
     return 0;
 }
 
-int vmm_translate(uint64_t virt, uint64_t *phys)
+static int translate_in(uint64_t *root, uint64_t virt, uint64_t *phys)
 {
-    uint64_t e = pml4[IDX(virt, 3)];
+    uint64_t e = root[IDX(virt, 3)];
     if (!(e & VMM_PRESENT)) return -1;
 
     e = ((uint64_t *)(e & ADDR_MASK))[IDX(virt, 2)];
@@ -125,13 +129,63 @@ int vmm_translate(uint64_t virt, uint64_t *phys)
     return 0;
 }
 
+int vmm_map(uint64_t virt, uint64_t phys, uint64_t flags) { return map_in(kpml4, virt, phys, flags); }
+int vmm_unmap(uint64_t virt)                              { return unmap_in(kpml4, virt); }
+int vmm_translate(uint64_t virt, uint64_t *phys)          { return translate_in(cur, virt, phys); }
+
+int vmm_map_in(uint64_t space, uint64_t virt, uint64_t phys, uint64_t flags)
+{
+    return map_in((uint64_t *)space, virt, phys, flags);
+}
+
+uint64_t vmm_kernel_space(void) { return (uint64_t)kpml4; }
+
+void vmm_switch(uint64_t space)
+{
+    if (space == (uint64_t)cur) return;
+    cur = (uint64_t *)space;
+    load_cr3(space);
+}
+
+uint64_t vmm_create_space(void)
+{
+    uint64_t *p = table_alloc();
+    if (!p) return 0;
+    p[0] = kpml4[0];                            /* identidad de 4 GiB compartida */
+    return (uint64_t)p;
+}
+
+/* level: 0 = PT (sus entradas son frames), 1 = PD, 2 = PDPT */
+static void free_tree(uint64_t tphys, int level)
+{
+    uint64_t *t = (uint64_t *)tphys;
+    for (int i = 0; i < 512; i++) {
+        uint64_t e = t[i];
+        if (!(e & VMM_PRESENT)) continue;
+        if (level == 0) pmm_free_page(e & ADDR_MASK);
+        else if (!(e & VMM_HUGE)) free_tree(e & ADDR_MASK, level - 1);
+    }
+    pmm_free_page(tphys);
+}
+
+void vmm_destroy_space(uint64_t space)
+{
+    if (!space || space == (uint64_t)kpml4) return;
+    if (space == (uint64_t)cur) vmm_switch((uint64_t)kpml4);
+
+    uint64_t *root = (uint64_t *)space;
+    for (int i = 1; i < 512; i++)               /* la entrada 0 es del kernel: no se toca */
+        if (root[i] & VMM_PRESENT) free_tree(root[i] & ADDR_MASK, 2);
+    pmm_free_page(space);
+}
+
 void vmm_init(void)
 {
-    pml4 = table_alloc();
+    kpml4 = table_alloc();
     uint64_t *pdpt = table_alloc();
-    if (!pml4 || !pdpt) vmm_panic("sin memoria para las tablas");
+    if (!kpml4 || !pdpt) vmm_panic("sin memoria para las tablas");
 
-    pml4[0] = (uint64_t)pdpt | VMM_PRESENT | VMM_WRITE;
+    kpml4[0] = (uint64_t)pdpt | VMM_PRESENT | VMM_WRITE;
 
     for (uint64_t g = 0; g < IDENTITY_GB; g++) {            /* 4 GiB identidad, paginas de 2 MiB */
         uint64_t *pd = table_alloc();
@@ -141,7 +195,8 @@ void vmm_init(void)
             pd[i] = ((g << 30) | (i << 21)) | VMM_PRESENT | VMM_WRITE | VMM_HUGE;
     }
 
-    load_cr3((uint64_t)pml4);
+    load_cr3((uint64_t)kpml4);
+    cur = kpml4;
 
     if (vmm_unmap(0)) vmm_panic("no pude desmapear la pagina 0");   /* guard page: NULL -> #PF */
 }
