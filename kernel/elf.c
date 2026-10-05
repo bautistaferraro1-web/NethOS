@@ -17,11 +17,12 @@ static int bad(const char *m)
 }
 
 int elf_load(const void *image, uint64_t size, uint64_t space,
-             uint64_t lo, uint64_t hi, uint64_t *entry)
+             uint64_t lo, uint64_t hi, uint64_t *entry, struct elf_aux *aux)
 {
     const uint8_t *img = image;
     const struct elf64_ehdr *eh = image;
 
+    if (aux) { aux->phdr = 0; aux->phnum = 0; aux->phent = 0; }
     if (size < sizeof(*eh)) return bad("archivo muy chico");
     if (img[0] != 0x7F || img[1] != 'E' || img[2] != 'L' || img[3] != 'F') return bad("magic invalido");
     if (eh->e_ident[4] != 2 || eh->e_ident[5] != 1) return bad("no es ELF64 little-endian");
@@ -44,6 +45,9 @@ int elf_load(const void *image, uint64_t size, uint64_t space,
         if (ph->p_offset > size || ph->p_filesz > size - ph->p_offset) return bad("segmento fuera del archivo");
         if (ph->p_vaddr < lo || ph->p_vaddr >= hi || ph->p_memsz > hi - ph->p_vaddr)
             return bad("segmento fuera de la region de usuario");
+
+        if (aux && !aux->phdr && eh->e_phoff >= ph->p_offset && eh->e_phoff < ph->p_offset + ph->p_filesz)
+            aux->phdr = ph->p_vaddr + (eh->e_phoff - ph->p_offset);   /* headers dentro de este PT_LOAD */
 
         uint64_t first = ph->p_vaddr & ~0xFFFULL;
         uint64_t last  = (ph->p_vaddr + ph->p_memsz + 0xFFF) & ~0xFFFULL;
@@ -74,6 +78,7 @@ int elf_load(const void *image, uint64_t size, uint64_t space,
     }
 
     if (!nload) return bad("sin segmentos PT_LOAD");
+    if (aux && aux->phdr) { aux->phnum = eh->e_phnum; aux->phent = eh->e_phentsize; }
     *entry = eh->e_entry;
     return 0;
 }

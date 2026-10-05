@@ -4,6 +4,7 @@
 #include "vmm.h"
 #include "user.h"
 #include "keyboard.h"
+#include "proc.h"
 
 #define SYS_READ  0
 #define SYS_WRITE 1
@@ -11,6 +12,9 @@
 #define SYS_EXIT  60
 #define SYS_SPAWN 500                      /* propias de Nethel */
 #define SYS_WAIT  501
+#define SYS_ARCH_PRCTL  158                /* Linux */
+#define SYS_SET_TID     218
+#define SYS_EXIT_GROUP  231
 
 #define UBASE 0x0000000000400000ULL        /* region de usuario */
 #define UEND  0x00007FFFFFFFF000ULL
@@ -21,6 +25,7 @@
 #define EBADF  9
 #define E2BIG  7
 #define EFAULT 14
+#define EINVAL 22
 
 /* El rango tiene que estar en la region de usuario y mapeado */
 static int user_range_ok(uint64_t p, uint64_t len)
@@ -127,6 +132,32 @@ static uint64_t sys_wait(uint64_t id)
     return 0;
 }
 
+#define ARCH_SET_FS 0x1002
+#define ARCH_GET_FS 0x1003
+
+static uint64_t sys_arch_prctl(uint64_t code, uint64_t addr)
+{
+    switch (code) {
+    case ARCH_SET_FS:
+        if (addr >= UEND) return ERR(EINVAL);            /* tiene que ser de usuario */
+        task_set_fs(addr);
+        return 0;
+    case ARCH_GET_FS:
+        if (!user_range_ok(addr, 8)) return ERR(EFAULT);
+        *(uint64_t *)addr = task_proc()->fs_base;
+        return 0;
+    default:
+        return ERR(EINVAL);
+    }
+}
+
+/* Sin threads ni futex todavia: solo recordamos la direccion y devolvemos el tid */
+static uint64_t sys_set_tid(uint64_t addr)
+{
+    task_proc()->clear_tid = addr;
+    return (uint64_t)task_id();
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -135,7 +166,10 @@ void syscall_dispatch(struct regs *r)
     case SYS_YIELD: yield(); r->rax = 0; break;
     case SYS_SPAWN: r->rax = sys_spawn(r->rdi, r->rsi); break;
     case SYS_WAIT:  r->rax = sys_wait(r->rdi); break;
+    case SYS_ARCH_PRCTL: r->rax = sys_arch_prctl(r->rdi, r->rsi); break;
+    case SYS_SET_TID:    r->rax = sys_set_tid(r->rdi); break;
     case SYS_EXIT:
+    case SYS_EXIT_GROUP:
         console_puts("[kernel] user exit("); console_dec(r->rdi); console_puts(")\n");
         user_cleanup();
         task_exit();

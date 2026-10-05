@@ -19,4 +19,9 @@ void task_mark_user(void);                                 /* la tarea actual es
 void task_interrupt_user(void);                            /* Ctrl+C: marca a la tarea de usuario mas nueva (seguro desde IRQ) */
 int  task_killed(void);                                    /* 1 si la tarea actual tiene Ctrl+C pendiente */
 
+struct proc;
+struct proc *task_proc(void);                              /* estado de proceso de la tarea actual */
+int  task_id(void);                                        /* id de la tarea actual */
+void task_set_fs(uint64_t base);                           /* FS_BASE de la tarea actual (y del MSR) */
+
 #endif

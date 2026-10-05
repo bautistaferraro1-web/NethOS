@@ -50,54 +50,92 @@ static int load_blob(uint64_t sp, const uint8_t *start, const uint8_t *end, uint
     return 0;
 }
 
-static int load_elf(uint64_t sp, const uint8_t *s, const uint8_t *e, uint64_t *entry)
+static int load_elf(uint64_t sp, const uint8_t *s, const uint8_t *e, uint64_t *entry, struct elf_aux *ai)
 {
-    return elf_load(s, (uint64_t)(e - s), sp, USER_CODE, USER_STACK, entry);
+    return elf_load(s, (uint64_t)(e - s), sp, USER_CODE, USER_STACK, entry, ai);
 }
 
 /* Lo que spawn() le pasa a la tarea nueva (se libera en user_task) */
 struct launch { int which; struct uargs args; };
 
+/* 16 bytes "aleatorios" para AT_RANDOM (TSC + xorshift: suficiente por ahora) */
+static void fill_random(uint8_t *dst)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    uint64_t x = (((uint64_t)hi << 32) | lo) ^ 0x9E3779B97F4A7C15ULL;
+    for (int i = 0; i < 16; i++) {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        dst[i] = (uint8_t)(x >> 24);
+    }
+}
+
+#define AT_NULL   0
+#define AT_PHDR   3
+#define AT_PHENT  4
+#define AT_PHNUM  5
+#define AT_PAGESZ 6
+#define AT_ENTRY  9
+#define AT_CLKTCK 17
+#define AT_SECURE 23
+#define AT_RANDOM 25
+#define NAUX      9
+
 /* Arma el stack inicial System V en 'frame', la pagina fisica de ARRIBA del stack
    (mapeada en USER_STACK_TOP - 4096). Devuelve el rsp inicial, alineado a 16:
-     rsp -> argc | argv[0..argc-1] | NULL | envp: NULL | auxv: AT_NULL,0 | ... strings */
-static uint64_t build_stack(uint64_t frame, const struct uargs *a)
+     rsp -> argc | argv[0..argc-1] | NULL | envp: NULL | auxv (pares) ... | random(16) | strings */
+static uint64_t build_stack(uint64_t frame, const struct uargs *a, uint64_t entry, const struct elf_aux *ai)
 {
     const uint64_t page = USER_STACK_TOP - 4096;
     uint64_t used = 0;
     for (int i = 0; i < a->argc; i++) { while (a->buf[used]) used++; used++; }
 
     uint64_t strva = (USER_STACK_TOP - used) & ~0xFULL;
-    uint64_t sp    = (strva - ((uint64_t)a->argc + 5) * 8) & ~0xFULL;
+    uint64_t rndva = strva - 16;
+    uint64_t nw    = 1 + (uint64_t)a->argc + 1 + 1 + NAUX * 2;
+    uint64_t sp    = (rndva - nw * 8) & ~0xFULL;
 
     volatile uint8_t *pg = (volatile uint8_t *)P2V(frame);
     for (uint64_t i = 0; i < used; i++) pg[strva - page + i] = (uint8_t)a->buf[i];
+    uint8_t rnd[16];
+    fill_random(rnd);
+    for (int i = 0; i < 16; i++) pg[rndva - page + i] = rnd[i];
 
     volatile uint64_t *w = (volatile uint64_t *)P2V(frame + (sp - page));
-    uint64_t off = 0;
-    w[0] = (uint64_t)a->argc;
+    uint64_t k = 0, off = 0;
+    w[k++] = (uint64_t)a->argc;
     for (int i = 0; i < a->argc; i++) {
-        w[1 + i] = strva + off;
+        w[k++] = strva + off;
         while (a->buf[off]) off++;
         off++;
     }
-    w[1 + a->argc] = 0;                      /* argv[argc] = NULL */
-    w[2 + a->argc] = 0;                      /* envp[0]    = NULL */
-    w[3 + a->argc] = 0;                      /* auxv: AT_NULL     */
-    w[4 + a->argc] = 0;
+    w[k++] = 0;                              /* argv[argc] = NULL */
+    w[k++] = 0;                              /* envp[0]    = NULL */
+#define AUX(t, v) do { w[k++] = (t); w[k++] = (v); } while (0)
+    AUX(AT_PAGESZ, 4096);
+    AUX(AT_CLKTCK, 100);
+    AUX(AT_PHDR,   ai->phdr);
+    AUX(AT_PHENT,  ai->phent);
+    AUX(AT_PHNUM,  ai->phnum);
+    AUX(AT_ENTRY,  entry);
+    AUX(AT_RANDOM, rndva);
+    AUX(AT_SECURE, 0);
+    AUX(AT_NULL,   0);
+#undef AUX
     return sp;
 }
 
 /* Se llama con interrupciones desactivadas (el PMM no es seguro con preemption) */
 static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint64_t *rsp)
 {
+    struct elf_aux ai = { 0, 0, 0 };
     uint64_t sp = vmm_create_space();
     if (!sp) { console_puts("user: sin memoria\n"); return -1; }
 
     int rc;
     if (which >= PROG_TABLE) {
         const struct prog *p = prog_at(which - PROG_TABLE);
-        rc = p ? load_elf(sp, p->start, p->end, entry) : -1;
+        rc = p ? load_elf(sp, p->start, p->end, entry, &ai) : -1;
     } else if (which == PROG_CRASH) {
         rc = load_blob(sp, ucrash_start, ucrash_end, entry);
     } else {
@@ -122,7 +160,7 @@ static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint
         return -1;
     }
 
-    *rsp = build_stack(top_frame, args);
+    *rsp = build_stack(top_frame, args, *entry, &ai);
     task_set_space(sp);                       /* a partir de aca CR3 = espacio del proceso */
     return 0;
 }

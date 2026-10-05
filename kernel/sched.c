@@ -3,6 +3,7 @@
 #include "cpu.h"
 #include "console.h"
 #include "fpu.h"
+#include "proc.h"
 #ifndef HOST_TEST
 #include "gdt.h"
 #include "vmm.h"
@@ -24,6 +25,7 @@ struct task {
     volatile int killed;                /* Ctrl+C pendiente */
     int is_user;                        /* proceso de usuario */
     struct fpu_state fpu;               /* estado x87/SSE (fxsave) */
+    struct proc proc;                   /* fs_base, brk, mmap... */
     struct task *next;                  /* lista circular */
 };
 
@@ -33,6 +35,13 @@ extern void task_trampoline(void);
 static struct task *current;
 static uint32_t next_id = 1;
 static int slice;
+
+#ifndef HOST_TEST
+static inline void wrmsr_fs(uint64_t v)
+{
+    __asm__ volatile("wrmsr" : : "c"(0xC0000100u), "a"((uint32_t)v), "d"((uint32_t)(v >> 32)) : "memory");
+}
+#endif
 
 static void copy_name(char *dst, const char *src)
 {
@@ -57,6 +66,7 @@ void sched_init(void)
     t->killed = 0;
     t->is_user = 0;
     fpu_init_state(&t->fpu);
+    proc_clear(&t->proc);
     t->next = t;
     current = t;
 }
@@ -99,6 +109,9 @@ static void schedule(void)
     fpu_save(&prev->fpu);
     fpu_restore(&n->fpu);
 #endif
+#if !defined(HOST_TEST) && !defined(NO_FS_SWITCH)
+    if (n->proc.fs_base != prev->proc.fs_base) wrmsr_fs(n->proc.fs_base);
+#endif
     switch_context(&prev->rsp, n->rsp);
 }
 
@@ -133,6 +146,7 @@ int task_create(const char *name, task_fn fn, void *arg)
     t->killed = 0;
     t->is_user = 0;
     fpu_init_state(&t->fpu);
+    proc_clear(&t->proc);
 
     uint64_t f = irq_save();
     t->id = next_id++;
@@ -246,3 +260,16 @@ void task_interrupt_user(void)
 }
 
 int task_killed(void) { return current->killed; }
+
+struct proc *task_proc(void) { return &current->proc; }
+int task_id(void) { return (int)current->id; }
+
+void task_set_fs(uint64_t base)
+{
+    uint64_t f = irq_save();
+    current->proc.fs_base = base;
+#ifndef HOST_TEST
+    wrmsr_fs(base);
+#endif
+    irq_restore(f);
+}
