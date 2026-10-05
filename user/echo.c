@@ -1,13 +1,20 @@
 /* echo.elf: lee lineas del teclado con read() y las repite. 'salir' termina. */
+#define NLIB_MAIN
 #include "nlib.h"
 
 static volatile int tope = 79;      /* .data (valor inicial distinto de cero) */
 static volatile u64 lineas;         /* .bss */
 
-void _start(void)
+int nmain(int argc, char **argv)
 {
     char line[80];
     int len = 0;
+
+    if (argc > 1) {                     /* modo comando: echo hola mundo */
+        for (int i = 1; i < argc; i++) { if (i > 1) print(" "); print(argv[i]); }
+        print("\n");
+        return 0;
+    }
 
     print("[echo.elf] escribi una linea y Enter. 'salir' o 'exit' para terminar.\n> ");
 
@@ -34,5 +41,5 @@ void _start(void)
     }
 
     print("[echo.elf] lineas: "); print_num(lineas); print("\n");
-    sys_exit(0);
+    return 0;
 }

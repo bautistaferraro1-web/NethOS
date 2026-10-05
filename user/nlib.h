@@ -33,4 +33,22 @@ static inline void print_num(u64 v)
     o[i] = 0;
     print(o);
 }
+/* Con NLIB_MAIN, _start arma (argc, argv, envp) del stack inicial y llama a
+   int nmain(int argc, char **argv). Si nmain retorna, hace exit(codigo). */
+#ifdef NLIB_MAIN
+__asm__(
+    ".pushsection .text\n"
+    ".globl _start\n"
+    "_start:\n"
+    "    xor  %ebp, %ebp\n"
+    "    mov  (%rsp), %rdi\n"
+    "    lea  8(%rsp), %rsi\n"
+    "    and  $-16, %rsp\n"
+    "    call nmain\n"
+    "    mov  %eax, %edi\n"
+    "    mov  $60, %eax\n"
+    "    int  $0x80\n"
+    ".popsection\n");
+#endif
+
 #endif

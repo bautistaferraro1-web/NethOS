@@ -8,6 +8,7 @@
 #include "elf.h"
 #include "progs.h"
 #include "keyboard.h"
+#include "heap.h"
 
 #define USER_CODE  0x0000008000000000ULL
 #define USER_STACK 0x0000008000100000ULL   /* base de la pagina; el tope es +4096 */
@@ -51,8 +52,41 @@ static int load_elf(uint64_t sp, const uint8_t *s, const uint8_t *e, uint64_t *e
     return elf_load(s, (uint64_t)(e - s), sp, USER_CODE, USER_STACK, entry);
 }
 
+/* Lo que spawn() le pasa a la tarea nueva (se libera en user_task) */
+struct launch { int which; struct uargs args; };
+
+/* Arma el stack inicial System V en la pagina fisica 'frame' (mapeada en USER_STACK).
+   Devuelve el rsp inicial, alineado a 16:
+     rsp -> argc | argv[0..argc-1] | NULL | envp: NULL | auxv: AT_NULL,0 | ... strings */
+static uint64_t build_stack(uint64_t frame, const struct uargs *a)
+{
+    uint64_t top  = USER_STACK + 4096;
+    uint64_t used = 0;
+    for (int i = 0; i < a->argc; i++) { while (a->buf[used]) used++; used++; }
+
+    uint64_t strva = (top - used) & ~0xFULL;
+    uint64_t sp    = (strva - ((uint64_t)a->argc + 5) * 8) & ~0xFULL;
+
+    volatile uint8_t *page = (volatile uint8_t *)frame;      /* identidad */
+    for (uint64_t i = 0; i < used; i++) page[strva - USER_STACK + i] = (uint8_t)a->buf[i];
+
+    volatile uint64_t *w = (volatile uint64_t *)(frame + (sp - USER_STACK));
+    uint64_t off = 0;
+    w[0] = (uint64_t)a->argc;
+    for (int i = 0; i < a->argc; i++) {
+        w[1 + i] = strva + off;
+        while (a->buf[off]) off++;
+        off++;
+    }
+    w[1 + a->argc] = 0;                      /* argv[argc] = NULL */
+    w[2 + a->argc] = 0;                      /* envp[0]    = NULL */
+    w[3 + a->argc] = 0;                      /* auxv: AT_NULL     */
+    w[4 + a->argc] = 0;
+    return sp;
+}
+
 /* Se llama con interrupciones desactivadas (el PMM no es seguro con preemption) */
-static int user_setup(int which, uint64_t *entry)
+static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint64_t *rsp)
 {
     uint64_t sp    = vmm_create_space();
     uint64_t stack = pmm_alloc_page();
@@ -84,6 +118,7 @@ static int user_setup(int which, uint64_t *entry)
         return -1;
     }
 
+    *rsp = build_stack(stack, args);
     task_set_space(sp);                       /* a partir de aca CR3 = espacio del proceso */
     return 0;
 }
@@ -110,13 +145,16 @@ void user_kill_self(void)
 
 static void user_task(void *arg)
 {
-    int which = (int)(uint64_t)arg;
+    struct launch *l = arg;
+    int which = l->which;
+    uint64_t rsp = 0;
     uint64_t entry = 0;
 
     task_mark_user();
 
     uint64_t f = irq_save();
-    int rc = user_setup(which, &entry);
+    int rc = user_setup(which, &l->args, &entry, &rsp);
+    kfree(l);
     if (rc && fg > 0) fg--;                   /* no llego a ser proceso */
     irq_restore(f);
     if (rc) return;
@@ -130,35 +168,53 @@ static void user_task(void *arg)
         "pushq %2\n\t"          /* CS     */
         "pushq %3\n\t"          /* RIP    */
         "iretq\n\t"
-        : : "i"(SEL_UDATA), "r"(USER_STACK + 4096),
+        : : "i"(SEL_UDATA), "r"(rsp),
             "i"(SEL_UCODE), "r"(entry) : "memory");
 
     for (;;) __asm__ volatile("hlt");
 }
 
 /* fg se sube al crear la tarea, asi el shell del kernel no se queda con teclas del proceso */
-static int spawn(const char *name, int which)
+static int spawn(const char *name, int which, const struct uargs *args)
 {
     keyboard_set_intr(task_interrupt_user);
-    uint64_t f = irq_save();
-    fg++;
-    irq_restore(f);
 
-    int id = task_create(name, user_task, (void *)(uint64_t)which);
+    uint64_t f = irq_save();
+    struct launch *l = kmalloc(sizeof(*l));
+    if (l) fg++;
+    irq_restore(f);
+    if (!l) return -1;
+
+    l->which = which;
+    l->args.argc = args ? args->argc : 0;
+    for (int i = 0; i < USER_ARGBUF; i++) l->args.buf[i] = args ? args->buf[i] : 0;
+
+    int id = task_create(name, user_task, l);
     if (id < 0) {
         f = irq_save();
         fg--;
+        kfree(l);
         irq_restore(f);
     }
     return id;
 }
 
-int user_spawn(void)       { return spawn("user",  PROG_ASM); }
-int user_spawn_crash(void) { return spawn("crash", PROG_CRASH); }
+int user_spawn(void)       { return spawn("user",  PROG_ASM,   0); }
+int user_spawn_crash(void) { return spawn("crash", PROG_CRASH, 0); }
 
-int user_spawn_name(const char *name)
+int user_spawn_args(const char *name, const struct uargs *args)
 {
     int i = prog_find(name);
     if (i < 0) return -1;
-    return spawn(prog_at(i)->name, PROG_TABLE + i);
+    return spawn(prog_at(i)->name, PROG_TABLE + i, args);
+}
+
+int user_spawn_name(const char *name)           /* desde el shell del kernel: argv = [name] */
+{
+    struct uargs a;
+    int n = 0;
+    while (name[n] && n < 15) { a.buf[n] = name[n]; n++; }
+    a.buf[n] = 0;
+    a.argc = 1;
+    return user_spawn_args(name, &a);
 }

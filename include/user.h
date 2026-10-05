@@ -11,4 +11,10 @@ int  user_foreground(void);
 
 void user_kill_self(void);   /* termina la tarea actual como un exit forzado */
 
+#define USER_MAXARGS 8
+#define USER_ARGBUF  256
+/* argv empaquetado: argc strings con NUL, una detras de otra */
+struct uargs { int argc; char buf[USER_ARGBUF]; };
+int  user_spawn_args(const char *name, const struct uargs *args);   /* -1 si no existe */
+
 #endif

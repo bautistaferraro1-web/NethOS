@@ -19,6 +19,7 @@
 #define ERR(n) ((uint64_t)-(int64_t)(n))
 #define ENOENT 2
 #define EBADF  9
+#define E2BIG  7
 #define EFAULT 14
 
 /* El rango tiene que estar en la region de usuario y mapeado */
@@ -75,11 +76,44 @@ static int copy_name(char *dst, uint64_t src)
     return 0;
 }
 
-static uint64_t sys_spawn(uint64_t uname)
+/* Copia un string del usuario (cap incluye el NUL). Devuelve el largo, -1 fault, -2 muy largo */
+static int copy_str(char *dst, int cap, uint64_t src)
+{
+    for (int i = 0; i < cap; i++) {
+        if (!user_range_ok(src + i, 1)) return -1;
+        dst[i] = ((const char *)src)[i];
+        if (!dst[i]) return i;
+    }
+    return -2;
+}
+
+/* spawn(nombre, argv): argv es un array de char* terminado en NULL (o 0) */
+static uint64_t sys_spawn(uint64_t uname, uint64_t uargv)
 {
     char name[16];
+    struct uargs a;
+    int off = 0;
+    a.argc = 0;
     if (copy_name(name, uname)) return ERR(EFAULT);
-    int id = user_spawn_name(name);
+
+    while (uargv) {
+        if (!user_range_ok(uargv + 8ULL * a.argc, 8)) return ERR(EFAULT);
+        uint64_t p = *(const uint64_t *)(uargv + 8ULL * a.argc);
+        if (!p) break;
+        if (a.argc >= USER_MAXARGS) return ERR(E2BIG);
+        int n = copy_str(a.buf + off, USER_ARGBUF - off, p);
+        if (n == -1) return ERR(EFAULT);
+        if (n < 0)   return ERR(E2BIG);
+        off += n + 1;
+        a.argc++;
+    }
+    if (a.argc == 0) {                       /* sin argv: argv[0] = nombre */
+        int n = 0;
+        while (name[n]) { a.buf[n] = name[n]; n++; }
+        a.buf[n] = 0;
+        a.argc = 1;
+    }
+    int id = user_spawn_args(name, &a);
     return id < 0 ? ERR(ENOENT) : (uint64_t)id;
 }
 
@@ -99,7 +133,7 @@ void syscall_dispatch(struct regs *r)
     case SYS_READ:  r->rax = sys_read(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITE: r->rax = sys_write(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
-    case SYS_SPAWN: r->rax = sys_spawn(r->rdi); break;
+    case SYS_SPAWN: r->rax = sys_spawn(r->rdi, r->rsi); break;
     case SYS_WAIT:  r->rax = sys_wait(r->rdi); break;
     case SYS_EXIT:
         console_puts("[kernel] user exit("); console_dec(r->rdi); console_puts(")\n");
