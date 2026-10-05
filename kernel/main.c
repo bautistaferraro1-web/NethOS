@@ -10,6 +10,7 @@
 #include "sched.h"
 #include "gdt.h"
 #include "user.h"
+#include "fpu.h"
 
 #define MB2_MAGIC 0x36D76289
 #define HZ        100
@@ -130,6 +131,8 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
 
     gdt_init();
     console_puts("GDT + TSS: OK\n");
+    fpu_init();
+    console_puts("FPU/SSE: OK (fxsave por tarea)\n");
     idt_init();
     console_puts("IDT: OK (excepciones + IRQ 0-47)\n\n");
 

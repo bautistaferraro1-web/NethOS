@@ -2,6 +2,7 @@
 #include "heap.h"
 #include "cpu.h"
 #include "console.h"
+#include "fpu.h"
 #ifndef HOST_TEST
 #include "gdt.h"
 #include "vmm.h"
@@ -22,6 +23,7 @@ struct task {
     uint64_t cr3;                       /* espacio de direcciones */
     volatile int killed;                /* Ctrl+C pendiente */
     int is_user;                        /* proceso de usuario */
+    struct fpu_state fpu;               /* estado x87/SSE (fxsave) */
     struct task *next;                  /* lista circular */
 };
 
@@ -54,6 +56,7 @@ void sched_init(void)
 #endif
     t->killed = 0;
     t->is_user = 0;
+    fpu_init_state(&t->fpu);
     t->next = t;
     current = t;
 }
@@ -92,6 +95,10 @@ static void schedule(void)
     if (n->stack) gdt_set_kernel_stack(((uint64_t)n->stack + STACK_SIZE) & ~0xFULL);
     vmm_switch(n->cr3);
 #endif
+#ifndef NO_FPU_SWITCH
+    fpu_save(&prev->fpu);
+    fpu_restore(&n->fpu);
+#endif
     switch_context(&prev->rsp, n->rsp);
 }
 
@@ -125,6 +132,7 @@ int task_create(const char *name, task_fn fn, void *arg)
 
     t->killed = 0;
     t->is_user = 0;
+    fpu_init_state(&t->fpu);
 
     uint64_t f = irq_save();
     t->id = next_id++;

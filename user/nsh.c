@@ -29,7 +29,7 @@ static void run(char *line)
 
     if (streq(av[0], "exit")) { print("nsh: chau\n"); sys_exit(0); }
     if (streq(av[0], "help")) {
-        print("nsh: internos: help exit | programas: hello echo nsh loop\n");
+        print("nsh: internos: help exit | programas: hello echo nsh loop sse\n");
         return;
     }
     comandos++;
