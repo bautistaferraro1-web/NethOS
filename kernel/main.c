@@ -120,7 +120,8 @@ static void run_command(const char *cmd)
 void kernel_main(uint64_t magic, uint64_t mb2_info)
 {
     console_clear();
-    console_puts("Nethel kernel 0.1 - NethOS\n\n");
+    console_puts("Nethel kernel 0.1 - NethOS\n");
+    console_puts("kernel_main @ "); console_hex((uint64_t)&kernel_main); console_puts("\n\n");
 
     if ((uint32_t)magic != MB2_MAGIC) {
         console_puts("ERROR: no arrancamos por Multiboot2\n");

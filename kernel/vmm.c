@@ -154,6 +154,7 @@ uint64_t vmm_create_space(void)
     if (!p) return 0;
     p[0] = kpml4[0];                            /* identidad de 4 GiB compartida */
     p[256] = kpml4[256];                        /* direct map compartido */
+    p[511] = kpml4[511];                        /* kernel en la mitad alta, compartido */
     return V2P(p);
 }
 
@@ -202,6 +203,12 @@ void vmm_init(void)
         for (uint64_t i = 0; i < 512; i++)
             { pd[i] = hpd[i] = ((g << 30) | (i << 21)) | VMM_PRESENT | VMM_WRITE | VMM_HUGE; }
     }
+
+    /* Kernel en 0xFFFFFFFF80000000: pdpt[510] -> mismas tablas de 2 MiB del direct map (0..1 GiB) */
+    uint64_t *kpdpt = table_alloc();
+    if (!kpdpt) vmm_panic("sin memoria para las tablas");
+    kpdpt[510] = hdpt[0];
+    kpml4[511] = V2P(kpdpt) | VMM_PRESENT | VMM_WRITE;
 
     load_cr3(V2P(kpml4));
     cur = kpml4;

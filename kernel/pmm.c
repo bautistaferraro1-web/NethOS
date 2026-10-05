@@ -91,7 +91,7 @@ void pmm_init(uint64_t mb2_info)
     }
 
     mark_used(0, 0x100000);
-    mark_used(0x100000, (uint64_t)kernel_end - 0x100000);
+    mark_used(0x100000, K2P(kernel_end) - 0x100000);
     mark_used(mb2_info, total_size);
 
     console_puts("\nTotal RAM (map): "); console_dec(total_ram >> 20);

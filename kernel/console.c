@@ -1,7 +1,8 @@
 #include "console.h"
 #include "cpu.h"
+#include "mem.h"
 
-#define VGA ((volatile uint16_t *)0xB8000)
+#define VGA ((volatile uint16_t *)P2V(0xB8000))
 #define W 80
 #define H 25
 
