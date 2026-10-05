@@ -67,7 +67,12 @@ static void row(const char *name, uint64_t v)
 void exception_handler(struct regs *r)
 {
     if (r->vector == 0x80) { syscall_dispatch(r); return; }
-    if (r->vector >= 32 && r->vector < 48) { irq_dispatch(r->vector - 32); return; }
+    if (r->vector >= 32 && r->vector < 48) {
+        irq_dispatch(r->vector - 32);
+        /* Ctrl+C pendiente y la tarea venia de Ring 3: morir como un exit forzado */
+        if ((r->cs & 3) == 3 && task_killed()) user_kill_self();
+        return;
+    }
     uint64_t cr2;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
     if ((r->cs & 3) == 3) {                 /* fallo en Ring 3: matar solo al proceso */
