@@ -7,7 +7,7 @@
 #define HUGE_MASK   0x000FFFFFFFE00000ULL      /* paginas de 2 MiB */
 #define GIB_MASK    0x000FFFFFC0000000ULL      /* paginas de 1 GiB */
 #define IDX(v, lvl) (((v) >> (12 + 9 * (lvl))) & 0x1FF)   /* 0=PT 1=PD 2=PDPT 3=PML4 */
-#define IDENTITY_GB 4
+#define DIRECT_MAP_GB 4
 
 #ifdef VMM_HOST                                 /* solo para tests en el host */
 #define invlpg(v)    ((void)(v))
@@ -89,9 +89,9 @@ static int valid_virt(uint64_t v)
 static int map_in(uint64_t *root, uint64_t virt, uint64_t phys, uint64_t flags)
 {
     if (!valid_virt(virt) || (phys & 0xFFF)) return -1;
-    /* La identidad (pml4[0]) es compartida: tocarla desde un espacio de usuario
+    /* La mitad alta (pml4[256..511]) es compartida: tocarla desde un espacio de usuario
        partiria paginas de 2 MiB que usan todos los procesos y el kernel. */
-    if (root != kpml4 && (IDX(virt, 3) == 0 || IDX(virt, 3) >= 256)) return -1;
+    if (root != kpml4 && IDX(virt, 3) >= 256) return -1;
     uint64_t *pt = get_pt(root, virt, 1, flags);
     if (!pt) return -1;
     pt[IDX(virt, 0)] = (phys & ADDR_MASK) | (flags & 0xFFF) | VMM_PRESENT;
@@ -152,7 +152,6 @@ uint64_t vmm_create_space(void)
 {
     uint64_t *p = table_alloc();
     if (!p) return 0;
-    p[0] = kpml4[0];                            /* identidad de 4 GiB compartida */
     p[256] = kpml4[256];                        /* direct map compartido */
     p[511] = kpml4[511];                        /* kernel en la mitad alta, compartido */
     return V2P(p);
@@ -177,8 +176,8 @@ void vmm_destroy_space(uint64_t space)
     if (space == V2P(cur)) vmm_switch(V2P(kpml4));
 
     uint64_t *root = (uint64_t *)P2V(space);
-    for (int i = 1; i < 256; i++)   /* 0 y 256+ son del kernel */
-                      /* la entrada 0 es del kernel: no se toca */
+    for (int i = 0; i < 256; i++)   /* 256+ son del kernel */
+                      /* la mitad baja es del proceso */
         if (root[i] & VMM_PRESENT) free_tree(root[i] & ADDR_MASK, 2);
     pmm_free_page(space);
 }
@@ -186,34 +185,26 @@ void vmm_destroy_space(uint64_t space)
 void vmm_init(void)
 {
     kpml4 = table_alloc();
-    uint64_t *pdpt = table_alloc();
-    uint64_t *hdpt = table_alloc();           /* direct map alto */
-    if (!kpml4 || !pdpt || !hdpt) vmm_panic("sin memoria para las tablas");
+    uint64_t *hdpt  = table_alloc();          /* direct map alto */
+    uint64_t *kpdpt = table_alloc();          /* kernel en la mitad alta */
+    if (!kpml4 || !hdpt || !kpdpt) vmm_panic("sin memoria para las tablas");
 
-    kpml4[0]   = V2P(pdpt) | VMM_PRESENT | VMM_WRITE;
-    kpml4[256] = V2P(hdpt) | VMM_PRESENT | VMM_WRITE;
-
-    for (uint64_t g = 0; g < IDENTITY_GB; g++) {            /* 4 GiB identidad, paginas de 2 MiB */
+    for (uint64_t g = 0; g < DIRECT_MAP_GB; g++) {          /* 4 GiB, paginas de 2 MiB */
         uint64_t *pd = table_alloc();
         if (!pd) vmm_panic("sin memoria para las tablas");
-        uint64_t *hpd = table_alloc();
-        if (!hpd) vmm_panic("sin memoria para las tablas");
-        pdpt[g] = V2P(pd)  | VMM_PRESENT | VMM_WRITE;
-        hdpt[g] = V2P(hpd) | VMM_PRESENT | VMM_WRITE;
+        hdpt[g] = V2P(pd) | VMM_PRESENT | VMM_WRITE;
         for (uint64_t i = 0; i < 512; i++)
-            { pd[i] = hpd[i] = ((g << 30) | (i << 21)) | VMM_PRESENT | VMM_WRITE | VMM_HUGE; }
+            pd[i] = ((g << 30) | (i << 21)) | VMM_PRESENT | VMM_WRITE | VMM_HUGE;
     }
+    kpml4[256] = V2P(hdpt) | VMM_PRESENT | VMM_WRITE;       /* 0xFFFF800000000000 */
 
-    /* Kernel en 0xFFFFFFFF80000000: pdpt[510] -> mismas tablas de 2 MiB del direct map (0..1 GiB) */
-    uint64_t *kpdpt = table_alloc();
-    if (!kpdpt) vmm_panic("sin memoria para las tablas");
+    /* Kernel en 0xFFFFFFFF80000000: pdpt[510] -> mismas tablas de 2 MiB (0..1 GiB) */
     kpdpt[510] = hdpt[0];
     kpml4[511] = V2P(kpdpt) | VMM_PRESENT | VMM_WRITE;
 
+    /* pml4[0..255] queda vacio: la mitad baja es toda de usuario (y NULL no esta mapeado) */
     load_cr3(V2P(kpml4));
     cur = kpml4;
-
-    if (vmm_unmap(0)) vmm_panic("no pude desmapear la pagina 0");   /* guard page: NULL -> #PF */
 }
 
 #ifndef VMM_HOST
@@ -222,7 +213,7 @@ void vmm_selftest(void)
     const uint64_t virt = 0x10000000000ULL;                 /* 1 TiB */
     const uint64_t magic = 0xDEADBEEFCAFEBABEULL;
 
-    console_puts("\nVMM: identidad 4 GiB, pagina 0 desmapeada\n");
+    console_puts("\nVMM: direct map 4 GiB + kernel en la mitad alta\n");
 
     uint64_t phys = pmm_alloc_page();
     if (!phys || vmm_map(virt, phys, VMM_WRITE)) {

@@ -11,8 +11,10 @@
 #include "keyboard.h"
 #include "heap.h"
 
-#define USER_CODE  0x0000008000000000ULL
-#define USER_STACK 0x0000008000100000ULL   /* base de la pagina; el tope es +4096 */
+#define USER_CODE        0x0000000000400000ULL   /* donde enlazan los ELF estandar */
+#define USER_STACK_PAGES 16
+#define USER_STACK_TOP   0x00007FFFFFFFF000ULL   /* fin (exclusivo); la pagina siguiente queda sin mapear */
+#define USER_STACK       (USER_STACK_TOP - USER_STACK_PAGES * 4096ULL)   /* base */
 
 /* which: 0 = asm, 1 = crash, 2+i = programa i de la tabla */
 enum { PROG_ASM, PROG_CRASH, PROG_TABLE };
@@ -56,22 +58,22 @@ static int load_elf(uint64_t sp, const uint8_t *s, const uint8_t *e, uint64_t *e
 /* Lo que spawn() le pasa a la tarea nueva (se libera en user_task) */
 struct launch { int which; struct uargs args; };
 
-/* Arma el stack inicial System V en la pagina fisica 'frame' (mapeada en USER_STACK).
-   Devuelve el rsp inicial, alineado a 16:
+/* Arma el stack inicial System V en 'frame', la pagina fisica de ARRIBA del stack
+   (mapeada en USER_STACK_TOP - 4096). Devuelve el rsp inicial, alineado a 16:
      rsp -> argc | argv[0..argc-1] | NULL | envp: NULL | auxv: AT_NULL,0 | ... strings */
 static uint64_t build_stack(uint64_t frame, const struct uargs *a)
 {
-    uint64_t top  = USER_STACK + 4096;
+    const uint64_t page = USER_STACK_TOP - 4096;
     uint64_t used = 0;
     for (int i = 0; i < a->argc; i++) { while (a->buf[used]) used++; used++; }
 
-    uint64_t strva = (top - used) & ~0xFULL;
+    uint64_t strva = (USER_STACK_TOP - used) & ~0xFULL;
     uint64_t sp    = (strva - ((uint64_t)a->argc + 5) * 8) & ~0xFULL;
 
-    volatile uint8_t *page = (volatile uint8_t *)P2V(frame);      /* identidad */
-    for (uint64_t i = 0; i < used; i++) page[strva - USER_STACK + i] = (uint8_t)a->buf[i];
+    volatile uint8_t *pg = (volatile uint8_t *)P2V(frame);
+    for (uint64_t i = 0; i < used; i++) pg[strva - page + i] = (uint8_t)a->buf[i];
 
-    volatile uint64_t *w = (volatile uint64_t *)P2V(frame + (sp - USER_STACK));
+    volatile uint64_t *w = (volatile uint64_t *)P2V(frame + (sp - page));
     uint64_t off = 0;
     w[0] = (uint64_t)a->argc;
     for (int i = 0; i < a->argc; i++) {
@@ -89,15 +91,8 @@ static uint64_t build_stack(uint64_t frame, const struct uargs *a)
 /* Se llama con interrupciones desactivadas (el PMM no es seguro con preemption) */
 static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint64_t *rsp)
 {
-    uint64_t sp    = vmm_create_space();
-    uint64_t stack = pmm_alloc_page();
-    if (!sp || !stack) {
-        console_puts("user: sin memoria\n");
-        if (stack) pmm_free_page(stack);
-        if (sp)    vmm_destroy_space(sp);
-        return -1;
-    }
-    zero_page(stack);
+    uint64_t sp = vmm_create_space();
+    if (!sp) { console_puts("user: sin memoria\n"); return -1; }
 
     int rc;
     if (which >= PROG_TABLE) {
@@ -109,17 +104,25 @@ static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint
         rc = load_blob(sp, uprog_start, uprog_end, entry);
     }
 
-    if (!rc && vmm_map_in(sp, USER_STACK, stack, VMM_USER | VMM_WRITE)) {
-        console_puts("user: vmm_map del stack fallo\n");
-        rc = -1;
+    uint64_t top_frame = 0;
+    for (int i = 0; !rc && i < USER_STACK_PAGES; i++) {
+        uint64_t f = pmm_alloc_page();
+        if (!f) { console_puts("user: sin memoria para el stack\n"); rc = -1; break; }
+        zero_page(f);
+        if (vmm_map_in(sp, USER_STACK + (uint64_t)i * 4096, f, VMM_USER | VMM_WRITE)) {
+            pmm_free_page(f);                 /* aun no es del espacio */
+            console_puts("user: vmm_map del stack fallo\n");
+            rc = -1;
+            break;
+        }
+        if (i == USER_STACK_PAGES - 1) top_frame = f;
     }
     if (rc) {
-        pmm_free_page(stack);                 /* aun no es del espacio */
         vmm_destroy_space(sp);                /* libera lo ya mapeado */
         return -1;
     }
 
-    *rsp = build_stack(stack, args);
+    *rsp = build_stack(top_frame, args);
     task_set_space(sp);                       /* a partir de aca CR3 = espacio del proceso */
     return 0;
 }

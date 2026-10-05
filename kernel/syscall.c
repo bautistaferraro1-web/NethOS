@@ -12,8 +12,8 @@
 #define SYS_SPAWN 500                      /* propias de Nethel */
 #define SYS_WAIT  501
 
-#define UBASE 0x0000008000000000ULL        /* region de usuario */
-#define UEND  0x0000008000200000ULL
+#define UBASE 0x0000000000400000ULL        /* region de usuario */
+#define UEND  0x00007FFFFFFFF000ULL
 #define MAXW  256
 
 #define ERR(n) ((uint64_t)-(int64_t)(n))

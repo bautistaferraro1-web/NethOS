@@ -43,8 +43,7 @@ ucrash_start:
     lea  cmsg(%rip), %rsi
     mov  $(cmsg_end - cmsg), %edx
     int  $0x80
-
-    mov  $0x100000, %eax           /* memoria del kernel: sin bit U */
+    movabs $0xFFFFFFFF80100000, %rax   /* memoria del kernel (mitad alta): sin bit U */
     mov  (%rax), %rax              /* -> #PF desde Ring 3 */
 1:  jmp  1b
 

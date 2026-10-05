@@ -2,7 +2,7 @@
 #include "console.h"
 #include "mem.h"
 
-/* vmm_init() mapea 4 GiB (identidad); el PMM maneja hasta 4 GiB */
+/* vmm_init() mapea 4 GiB (direct map); el PMM maneja hasta 4 GiB */
 #define MAX_MEM    (4ULL << 30)
 #define MAX_PAGES  (MAX_MEM / PAGE_SIZE)
 
