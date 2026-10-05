@@ -9,4 +9,6 @@ void user_cleanup(void);
 /* 1 si hay procesos de usuario vivos: el shell del kernel no lee el teclado */
 int  user_foreground(void);
 
+void user_kill_self(void);   /* termina la tarea actual como un exit forzado */
+
 #endif

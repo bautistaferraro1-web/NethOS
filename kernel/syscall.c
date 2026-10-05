@@ -51,8 +51,10 @@ static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len)
     if (!user_range_ok(buf, len)) return ERR(EFAULT);
 
     int c;
-    while ((c = keyboard_getc()) < 0)
+    while ((c = keyboard_getc()) < 0) {
+        if (task_killed()) user_kill_self();
         __asm__ volatile("sti; hlt; cli" : : : "memory");   /* dormir hasta una IRQ */
+    }
 
     char *d = (char *)buf;
     uint64_t n = 0;
@@ -84,6 +86,7 @@ static uint64_t sys_spawn(uint64_t uname)
 static uint64_t sys_wait(uint64_t id)
 {
     while (task_alive((int)id)) {
+        if (task_killed()) user_kill_self();
         yield();
         __asm__ volatile("sti; hlt; cli" : : : "memory");
     }

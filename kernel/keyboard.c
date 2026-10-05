@@ -17,7 +17,10 @@ _Static_assert(sizeof(shifted) - 1 == 58, "mapa shift incompleto");
 #define BUF 256
 static volatile uint8_t head, tail;
 static char buf[BUF];
-static int shift, ext;
+static int shift, ext, ctrl;
+static void (*intr_hook)(void);
+
+void keyboard_set_intr(void (*fn)(void)) { intr_hook = fn; }
 
 static void push(char c)
 {
@@ -31,16 +34,25 @@ static void kbd_irq(void)
 {
     uint8_t sc = inb(0x60);
 
-    if (sc == 0xE0) { ext = 1; return; }     /* teclas extendidas: ignoradas por ahora */
-    if (ext) { ext = 0; return; }
+    if (sc == 0xE0) { ext = 1; return; }
+    if (ext) {                               /* extendidas: solo Ctrl derecho */
+        ext = 0;
+        if ((sc & 0x7F) == 0x1D) ctrl = !(sc & 0x80);
+        return;
+    }
 
     uint8_t code = sc & 0x7F;
     int released = sc & 0x80;
 
     if (code == 0x2A || code == 0x36) { shift = !released; return; }
+    if (code == 0x1D)                 { ctrl  = !released; return; }
     if (released || code >= 58) return;
 
     char c = shift ? shifted[code] : normal[code];
+    if (ctrl && (c == 'c' || c == 'C')) {
+        if (intr_hook) intr_hook();          /* Ctrl+C: no entra al buffer */
+        return;
+    }
     if (c) push(c);
 }
 

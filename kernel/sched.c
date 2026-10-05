@@ -20,6 +20,8 @@ struct task {
     uint8_t *stack;                     /* 0 para la tarea de arranque */
     uint64_t ticks;
     uint64_t cr3;                       /* espacio de direcciones */
+    volatile int killed;                /* Ctrl+C pendiente */
+    int is_user;                        /* proceso de usuario */
     struct task *next;                  /* lista circular */
 };
 
@@ -50,6 +52,8 @@ void sched_init(void)
 #ifndef HOST_TEST
     t->cr3 = vmm_kernel_space();
 #endif
+    t->killed = 0;
+    t->is_user = 0;
     t->next = t;
     current = t;
 }
@@ -118,6 +122,9 @@ int task_create(const char *name, task_fn fn, void *arg)
 #ifndef HOST_TEST
     t->cr3 = vmm_kernel_space();
 #endif
+
+    t->killed = 0;
+    t->is_user = 0;
 
     uint64_t f = irq_save();
     t->id = next_id++;
@@ -211,3 +218,23 @@ int task_alive(int id)
     irq_restore(f);
     return alive;
 }
+
+void task_mark_user(void) { current->is_user = 1; }
+
+/* Ctrl+C: marca a la tarea de usuario mas nueva. Seguro desde una IRQ:
+   no libera nada, la tarea muere sola cuando vuelva a correr. */
+void task_interrupt_user(void)
+{
+    if (!current) return;
+    uint64_t f = irq_save();
+    struct task *best = 0;
+    struct task *t = current;
+    do {
+        if (t->is_user && t->state != T_DEAD && (!best || t->id > best->id)) best = t;
+        t = t->next;
+    } while (t != current);
+    if (best) best->killed = 1;
+    irq_restore(f);
+}
+
+int task_killed(void) { return current->killed; }

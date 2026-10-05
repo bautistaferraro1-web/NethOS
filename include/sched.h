@@ -15,4 +15,8 @@ int  task_alive(int id);                                   /* 1 si la tarea exis
 void     task_set_space(uint64_t space);                   /* espacio de la tarea actual */
 uint64_t task_get_space(void);
 
+void task_mark_user(void);                                 /* la tarea actual es de usuario */
+void task_interrupt_user(void);                            /* Ctrl+C: marca a la tarea de usuario mas nueva (seguro desde IRQ) */
+int  task_killed(void);                                    /* 1 si la tarea actual tiene Ctrl+C pendiente */
+
 #endif

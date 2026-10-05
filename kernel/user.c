@@ -7,6 +7,7 @@
 #include "console.h"
 #include "elf.h"
 #include "progs.h"
+#include "keyboard.h"
 
 #define USER_CODE  0x0000008000000000ULL
 #define USER_STACK 0x0000008000100000ULL   /* base de la pagina; el tope es +4096 */
@@ -98,10 +99,21 @@ void user_cleanup(void)
 
 int user_foreground(void) { return fg > 0; }
 
+/* La tarea actual muere por Ctrl+C: mismo camino que exit */
+void user_kill_self(void)
+{
+    (void)irq_save();                     /* no se restaura: no vuelve */
+    console_puts("\n[kernel] proceso terminado (Ctrl+C)\n");
+    user_cleanup();
+    task_exit();
+}
+
 static void user_task(void *arg)
 {
     int which = (int)(uint64_t)arg;
     uint64_t entry = 0;
+
+    task_mark_user();
 
     uint64_t f = irq_save();
     int rc = user_setup(which, &entry);
@@ -127,6 +139,7 @@ static void user_task(void *arg)
 /* fg se sube al crear la tarea, asi el shell del kernel no se queda con teclas del proceso */
 static int spawn(const char *name, int which)
 {
+    keyboard_set_intr(task_interrupt_user);
     uint64_t f = irq_save();
     fg++;
     irq_restore(f);
