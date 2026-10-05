@@ -49,6 +49,8 @@ _start:
     mov  $pdpt, %eax
     or   $0x3, %eax
     mov  %eax, pml4
+    mov  %eax, pml4+2048          /* pml4[256]: direct map alto (mismo pdpt) */
+    mov  %eax, pml4+2048          /* pml4[256]: direct map alto (mismo pdpt) */
     mov  $pd, %eax
     or   $0x3, %eax
     mov  %eax, pdpt

@@ -1,5 +1,6 @@
 #include "pmm.h"
 #include "console.h"
+#include "mem.h"
 
 /* vmm_init() mapea 4 GiB (identidad); el PMM maneja hasta 4 GiB */
 #define MAX_MEM    (4ULL << 30)
@@ -57,12 +58,12 @@ void pmm_init(uint64_t mb2_info)
 {
     for (uint64_t i = 0; i < sizeof(bitmap); i++) bitmap[i] = 0xFF;
 
-    uint32_t total_size = *(uint32_t *)mb2_info;
+    uint32_t total_size = *(uint32_t *)P2V(mb2_info);
     uint64_t total_ram = 0, avail_ram = 0;
 
     console_puts("Memory map:\n");
 
-    uint8_t *p = (uint8_t *)(mb2_info + 8);
+    uint8_t *p = (uint8_t *)(P2V(mb2_info) + 8);
     for (;;) {
         struct mb2_tag *t = (struct mb2_tag *)p;
         if (t->type == 0) break;

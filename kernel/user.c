@@ -2,6 +2,7 @@
 #include "gdt.h"
 #include "vmm.h"
 #include "pmm.h"
+#include "mem.h"
 #include "cpu.h"
 #include "sched.h"
 #include "console.h"
@@ -23,7 +24,7 @@ static volatile int fg;                    /* procesos de usuario vivos */
 
 static void zero_page(uint64_t phys)
 {
-    volatile uint64_t *p = (volatile uint64_t *)phys;
+    volatile uint64_t *p = (volatile uint64_t *)P2V(phys);
     for (int i = 0; i < 512; i++) p[i] = 0;
 }
 
@@ -36,7 +37,7 @@ static int load_blob(uint64_t sp, const uint8_t *start, const uint8_t *end, uint
     uint64_t code = pmm_alloc_page();
     if (!code) { console_puts("user: sin memoria\n"); return -1; }
     zero_page(code);
-    for (uint64_t i = 0; i < size; i++) ((volatile uint8_t *)code)[i] = start[i];
+    for (uint64_t i = 0; i < size; i++) ((volatile uint8_t *)P2V(code))[i] = start[i];
 
     if (vmm_map_in(sp, USER_CODE, code, VMM_USER)) {
         pmm_free_page(code);
@@ -67,10 +68,10 @@ static uint64_t build_stack(uint64_t frame, const struct uargs *a)
     uint64_t strva = (top - used) & ~0xFULL;
     uint64_t sp    = (strva - ((uint64_t)a->argc + 5) * 8) & ~0xFULL;
 
-    volatile uint8_t *page = (volatile uint8_t *)frame;      /* identidad */
+    volatile uint8_t *page = (volatile uint8_t *)P2V(frame);      /* identidad */
     for (uint64_t i = 0; i < used; i++) page[strva - USER_STACK + i] = (uint8_t)a->buf[i];
 
-    volatile uint64_t *w = (volatile uint64_t *)(frame + (sp - USER_STACK));
+    volatile uint64_t *w = (volatile uint64_t *)P2V(frame + (sp - USER_STACK));
     uint64_t off = 0;
     w[0] = (uint64_t)a->argc;
     for (int i = 0; i < a->argc; i++) {

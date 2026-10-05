@@ -1,6 +1,7 @@
 #include "elf.h"
 #include "vmm.h"
 #include "pmm.h"
+#include "mem.h"
 #include "console.h"
 
 #define PT_LOAD   1
@@ -56,7 +57,7 @@ int elf_load(const void *image, uint64_t size, uint64_t space,
             uint64_t frame = pmm_alloc_page();
             if (!frame) return bad("sin memoria");
 
-            volatile uint8_t *dst = (volatile uint8_t *)frame;   /* identidad */
+            volatile uint8_t *dst = (volatile uint8_t *)P2V(frame);   /* identidad */
             for (uint64_t k = 0; k < PAGE_SIZE; k++) dst[k] = 0;
 
             uint64_t s = va > fstart ? va : fstart;

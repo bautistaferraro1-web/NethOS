@@ -1,6 +1,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "console.h"
+#include "mem.h"
 
 #define ADDR_MASK   0x000FFFFFFFFFF000ULL
 #define HUGE_MASK   0x000FFFFFFFE00000ULL      /* paginas de 2 MiB */
@@ -31,7 +32,7 @@ static uint64_t *table_alloc(void)
 {
     uint64_t p = pmm_alloc_page();
     if (!p) return 0;
-    uint64_t *t = (uint64_t *)p;
+    uint64_t *t = (uint64_t *)P2V(p);
     for (int i = 0; i < 512; i++) t[i] = 0;
     return t;
 }
@@ -47,7 +48,7 @@ static uint64_t *split_huge(uint64_t *pd, uint64_t idx)
     uint64_t flags = e & 0xFFF & ~VMM_HUGE;
     for (uint64_t i = 0; i < 512; i++) pt[i] = (base + i * PAGE_SIZE) | flags;
 
-    pd[idx] = (uint64_t)pt | VMM_PRESENT | VMM_WRITE | (e & VMM_USER);
+    pd[idx] = V2P(pt) | VMM_PRESENT | VMM_WRITE | (e & VMM_USER);
     return pt;
 }
 
@@ -57,13 +58,13 @@ static uint64_t *descend(uint64_t *tbl, uint64_t idx, int create, uint64_t flags
     if (e & VMM_PRESENT) {
         if (e & VMM_HUGE) return 0;
         if ((flags & VMM_USER) && !(e & VMM_USER)) tbl[idx] = e | VMM_USER;
-        return (uint64_t *)(e & ADDR_MASK);
+        return (uint64_t *)P2V(e & ADDR_MASK);
     }
     if (!create) return 0;
 
     uint64_t *n = table_alloc();
     if (!n) return 0;
-    tbl[idx] = (uint64_t)n | VMM_PRESENT | VMM_WRITE | (flags & VMM_USER);
+    tbl[idx] = V2P(n) | VMM_PRESENT | VMM_WRITE | (flags & VMM_USER);
     return n;
 }
 
@@ -90,7 +91,7 @@ static int map_in(uint64_t *root, uint64_t virt, uint64_t phys, uint64_t flags)
     if (!valid_virt(virt) || (phys & 0xFFF)) return -1;
     /* La identidad (pml4[0]) es compartida: tocarla desde un espacio de usuario
        partiria paginas de 2 MiB que usan todos los procesos y el kernel. */
-    if (root != kpml4 && IDX(virt, 3) == 0) return -1;
+    if (root != kpml4 && (IDX(virt, 3) == 0 || IDX(virt, 3) >= 256)) return -1;
     uint64_t *pt = get_pt(root, virt, 1, flags);
     if (!pt) return -1;
     pt[IDX(virt, 0)] = (phys & ADDR_MASK) | (flags & 0xFFF) | VMM_PRESENT;
@@ -115,15 +116,15 @@ static int translate_in(uint64_t *root, uint64_t virt, uint64_t *phys)
     uint64_t e = root[IDX(virt, 3)];
     if (!(e & VMM_PRESENT)) return -1;
 
-    e = ((uint64_t *)(e & ADDR_MASK))[IDX(virt, 2)];
+    e = ((uint64_t *)P2V(e & ADDR_MASK))[IDX(virt, 2)];
     if (!(e & VMM_PRESENT)) return -1;
     if (e & VMM_HUGE) { *phys = (e & GIB_MASK) | (virt & 0x3FFFFFFFULL); return 0; }
 
-    e = ((uint64_t *)(e & ADDR_MASK))[IDX(virt, 1)];
+    e = ((uint64_t *)P2V(e & ADDR_MASK))[IDX(virt, 1)];
     if (!(e & VMM_PRESENT)) return -1;
     if (e & VMM_HUGE) { *phys = (e & HUGE_MASK) | (virt & 0x1FFFFFULL); return 0; }
 
-    e = ((uint64_t *)(e & ADDR_MASK))[IDX(virt, 0)];
+    e = ((uint64_t *)P2V(e & ADDR_MASK))[IDX(virt, 0)];
     if (!(e & VMM_PRESENT)) return -1;
     *phys = (e & ADDR_MASK) | (virt & 0xFFF);
     return 0;
@@ -135,15 +136,15 @@ int vmm_translate(uint64_t virt, uint64_t *phys)          { return translate_in(
 
 int vmm_map_in(uint64_t space, uint64_t virt, uint64_t phys, uint64_t flags)
 {
-    return map_in((uint64_t *)space, virt, phys, flags);
+    return map_in((uint64_t *)P2V(space), virt, phys, flags);
 }
 
-uint64_t vmm_kernel_space(void) { return (uint64_t)kpml4; }
+uint64_t vmm_kernel_space(void) { return V2P(kpml4); }
 
 void vmm_switch(uint64_t space)
 {
-    if (space == (uint64_t)cur) return;
-    cur = (uint64_t *)space;
+    if (space == V2P(cur)) return;
+    cur = (uint64_t *)P2V(space);
     load_cr3(space);
 }
 
@@ -152,13 +153,14 @@ uint64_t vmm_create_space(void)
     uint64_t *p = table_alloc();
     if (!p) return 0;
     p[0] = kpml4[0];                            /* identidad de 4 GiB compartida */
-    return (uint64_t)p;
+    p[256] = kpml4[256];                        /* direct map compartido */
+    return V2P(p);
 }
 
 /* level: 0 = PT (sus entradas son frames), 1 = PD, 2 = PDPT */
 static void free_tree(uint64_t tphys, int level)
 {
-    uint64_t *t = (uint64_t *)tphys;
+    uint64_t *t = (uint64_t *)P2V(tphys);
     for (int i = 0; i < 512; i++) {
         uint64_t e = t[i];
         if (!(e & VMM_PRESENT)) continue;
@@ -170,11 +172,12 @@ static void free_tree(uint64_t tphys, int level)
 
 void vmm_destroy_space(uint64_t space)
 {
-    if (!space || space == (uint64_t)kpml4) return;
-    if (space == (uint64_t)cur) vmm_switch((uint64_t)kpml4);
+    if (!space || space == V2P(kpml4)) return;
+    if (space == V2P(cur)) vmm_switch(V2P(kpml4));
 
-    uint64_t *root = (uint64_t *)space;
-    for (int i = 1; i < 512; i++)               /* la entrada 0 es del kernel: no se toca */
+    uint64_t *root = (uint64_t *)P2V(space);
+    for (int i = 1; i < 256; i++)   /* 0 y 256+ son del kernel */
+                      /* la entrada 0 es del kernel: no se toca */
         if (root[i] & VMM_PRESENT) free_tree(root[i] & ADDR_MASK, 2);
     pmm_free_page(space);
 }
@@ -183,19 +186,24 @@ void vmm_init(void)
 {
     kpml4 = table_alloc();
     uint64_t *pdpt = table_alloc();
-    if (!kpml4 || !pdpt) vmm_panic("sin memoria para las tablas");
+    uint64_t *hdpt = table_alloc();           /* direct map alto */
+    if (!kpml4 || !pdpt || !hdpt) vmm_panic("sin memoria para las tablas");
 
-    kpml4[0] = (uint64_t)pdpt | VMM_PRESENT | VMM_WRITE;
+    kpml4[0]   = V2P(pdpt) | VMM_PRESENT | VMM_WRITE;
+    kpml4[256] = V2P(hdpt) | VMM_PRESENT | VMM_WRITE;
 
     for (uint64_t g = 0; g < IDENTITY_GB; g++) {            /* 4 GiB identidad, paginas de 2 MiB */
         uint64_t *pd = table_alloc();
         if (!pd) vmm_panic("sin memoria para las tablas");
-        pdpt[g] = (uint64_t)pd | VMM_PRESENT | VMM_WRITE;
+        uint64_t *hpd = table_alloc();
+        if (!hpd) vmm_panic("sin memoria para las tablas");
+        pdpt[g] = V2P(pd)  | VMM_PRESENT | VMM_WRITE;
+        hdpt[g] = V2P(hpd) | VMM_PRESENT | VMM_WRITE;
         for (uint64_t i = 0; i < 512; i++)
-            pd[i] = ((g << 30) | (i << 21)) | VMM_PRESENT | VMM_WRITE | VMM_HUGE;
+            { pd[i] = hpd[i] = ((g << 30) | (i << 21)) | VMM_PRESENT | VMM_WRITE | VMM_HUGE; }
     }
 
-    load_cr3((uint64_t)kpml4);
+    load_cr3(V2P(kpml4));
     cur = kpml4;
 
     if (vmm_unmap(0)) vmm_panic("no pude desmapear la pagina 0");   /* guard page: NULL -> #PF */
@@ -216,7 +224,7 @@ void vmm_selftest(void)
     }
 
     *(volatile uint64_t *)virt = magic;                     /* escribo por la direccion virtual */
-    uint64_t alias = *(volatile uint64_t *)phys;            /* leo por la fisica (identidad) */
+    uint64_t alias = *(volatile uint64_t *)P2V(phys);            /* leo por la fisica (identidad) */
     uint64_t t = 0;
     int rc = vmm_translate(virt, &t);
 

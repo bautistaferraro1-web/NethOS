@@ -2,6 +2,7 @@
 #include "cpu.h"
 #include "pmm.h"
 #include "console.h"
+#include "mem.h"
 
 #define MAGIC 0x4E455448u            /* "NETH" */
 #define ALIGN 16
@@ -25,10 +26,10 @@ void heap_init(uint64_t pages)
         console_puts("heap: no hay memoria contigua\n");
         return;
     }
-    heap_base  = base;
+    heap_base  = P2V(base);
     heap_total = pages * PAGE_SIZE;
 
-    head = (struct block *)base;
+    head = (struct block *)heap_base;
     head->size  = heap_total - HDR;
     head->prev  = head->next = 0;
     head->free  = 1;
