@@ -76,3 +76,18 @@ isr128:
     pushq $0
     pushq $128
     jmp isr_common
+
+/* Entrada por la instruccion `syscall` (MSR LSTAR). Entra con IF=0, rcx=rip, r11=rflags,
+   rsp todavia de usuario. Arma el mismo frame que int 0x80 y reusa isr128/isr_common. */
+.section .text
+.code64
+.global syscall_entry
+syscall_entry:
+    mov  %rsp, syscall_ustack(%rip)
+    mov  syscall_kstack(%rip), %rsp
+    pushq $0x1B                        /* ss  = SEL_UDATA */
+    pushq syscall_ustack(%rip)         /* rsp de usuario */
+    pushq %r11                         /* rflags */
+    pushq $0x23                        /* cs  = SEL_UCODE */
+    pushq %rcx                         /* rip */
+    jmp  isr128

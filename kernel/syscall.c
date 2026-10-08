@@ -334,6 +334,7 @@ void syscall_dispatch(struct regs *r)
         task_exit();
         for (;;) __asm__ volatile("hlt");
     default:
+        console_puts("[kernel] syscall sin implementar: "); console_dec(r->rax); console_putc('\n');
         r->rax = ERR(38);                  /* ENOSYS */
     }
 }

@@ -23,7 +23,23 @@ static struct gdtr gdtr;
 /* Stack inicial para entradas desde Ring 3 (luego se cambia por tarea) */
 static uint8_t kstack[16384] __attribute__((aligned(16)));
 
-void gdt_set_kernel_stack(uint64_t rsp0) { tss.rsp0 = rsp0; }
+/* Stack de kernel para la instruccion syscall (igual a tss.rsp0; un solo CPU) */
+uint64_t syscall_kstack, syscall_ustack;
+extern void syscall_entry(void);
+
+void gdt_set_kernel_stack(uint64_t rsp0) { tss.rsp0 = rsp0; syscall_kstack = rsp0; }
+
+static inline uint64_t rdmsr(uint32_t msr)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t v)
+{
+    __asm__ volatile("wrmsr" : : "c"(msr), "a"((uint32_t)v), "d"((uint32_t)(v >> 32)) : "memory");
+}
 
 static void set_tss_desc(int idx, uint64_t base, uint32_t limit)
 {
@@ -67,4 +83,11 @@ void gdt_init(void)
         : : "m"(gdtr) : "rax", "memory");
 
     __asm__ volatile("ltr %w0" : : "r"((uint16_t)SEL_TSS));
+
+    /* syscall/sysret: STAR[47:32]=CS kernel (SS=+8), STAR[63:48]=base de sysret (SS=+8, CS=+16) */
+    syscall_kstack = tss.rsp0;
+    wrmsr(0xC0000080, rdmsr(0xC0000080) | 1);                    /* EFER.SCE */
+    wrmsr(0xC0000081, (0x10ULL << 48) | ((uint64_t)SEL_KCODE << 32));
+    wrmsr(0xC0000082, (uint64_t)syscall_entry);                  /* LSTAR */
+    wrmsr(0xC0000084, 0x700);                                    /* SFMASK: limpia TF, IF, DF */
 }
