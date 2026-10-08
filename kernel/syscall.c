@@ -10,6 +10,8 @@
 
 #define SYS_READ  0
 #define SYS_WRITE 1
+#define SYS_IOCTL  16
+#define SYS_WRITEV 20
 #define SYS_YIELD 24
 #define SYS_EXIT  60
 #define SYS_SPAWN 500                      /* propias de Nethel */
@@ -20,7 +22,6 @@
 
 #define UBASE 0x0000000000400000ULL        /* region de usuario */
 #define UEND  0x00007FFFFFFFF000ULL
-#define MAXW  256
 
 #define ERR(n) ((uint64_t)-(int64_t)(n))
 #define ENOENT 2
@@ -45,7 +46,6 @@ static int user_range_ok(uint64_t p, uint64_t len)
 static uint64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len)
 {
     if (fd != 1 && fd != 2) return ERR(EBADF);
-    if (len > MAXW) len = MAXW;
     if (!user_range_ok(buf, len)) return ERR(EFAULT);
     const char *s = (const char *)buf;
     for (uint64_t i = 0; i < len; i++) console_putc(s[i]);
@@ -56,7 +56,6 @@ static uint64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len)
 static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len)
 {
     if (fd != 0) return ERR(EBADF);
-    if (len > MAXW) len = MAXW;
     if (len == 0) return 0;
     if (!user_range_ok(buf, len)) return ERR(EFAULT);
 
@@ -71,6 +70,44 @@ static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len)
     d[n++] = (char)c;
     while (n < len && (c = keyboard_getc()) >= 0) d[n++] = (char)c;
     return n;
+}
+
+struct nethel_iovec { uint64_t base, len; };
+#define IOV_MAX 1024
+
+static uint64_t sys_writev(uint64_t fd, uint64_t uiov, uint64_t cnt)
+{
+    if (fd != 1 && fd != 2) return ERR(EBADF);
+    if (cnt > IOV_MAX) return ERR(EINVAL);
+    if (cnt == 0) return 0;
+    if (!user_range_ok(uiov, cnt * sizeof(struct nethel_iovec))) return ERR(EFAULT);
+
+    const struct nethel_iovec *iov = (const struct nethel_iovec *)uiov;
+    uint64_t total = 0;
+    for (uint64_t i = 0; i < cnt; i++) {          /* validar todo antes de escribir */
+        if (iov[i].len > (1ULL << 40) - total) return ERR(EINVAL);
+        if (iov[i].len && !user_range_ok(iov[i].base, iov[i].len)) return ERR(EFAULT);
+        total += iov[i].len;
+    }
+    for (uint64_t i = 0; i < cnt; i++) {
+        const char *s = (const char *)iov[i].base;
+        for (uint64_t j = 0; j < iov[i].len; j++) console_putc(s[j]);
+    }
+    return total;
+}
+
+#define TCGETS 0x5401
+#define KTERMIOS_SIZE 36        /* struct termios del kernel: lo que glibc reserva */
+
+static uint64_t sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg)
+{
+    if (fd > 2) return ERR(EBADF);
+    if (req == TCGETS) {
+        if (!user_range_ok(arg, KTERMIOS_SIZE)) return ERR(EFAULT);
+        for (int i = 0; i < KTERMIOS_SIZE; i++) ((uint8_t *)arg)[i] = 0;
+        return 0;
+    }
+    return ERR(EINVAL);
 }
 
 /* Copia un nombre del usuario (max 15 chars), validando cada byte */
@@ -279,6 +316,8 @@ void syscall_dispatch(struct regs *r)
     switch (r->rax) {
     case SYS_READ:  r->rax = sys_read(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITE: r->rax = sys_write(r->rdi, r->rsi, r->rdx); break;
+    case SYS_IOCTL:  r->rax = sys_ioctl(r->rdi, r->rsi, r->rdx); break;
+    case SYS_WRITEV: r->rax = sys_writev(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
     case SYS_SPAWN: r->rax = sys_spawn(r->rdi, r->rsi); break;
     case SYS_WAIT:  r->rax = sys_wait(r->rdi); break;

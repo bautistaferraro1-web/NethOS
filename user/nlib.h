@@ -12,6 +12,9 @@ static inline long sys3(long n, long a, long b, long c)
 
 static inline long sys_read(int fd, void *b, u64 n)        { return sys3(0, fd, (long)b, (long)n); }
 static inline long sys_write(int fd, const void *b, u64 n) { return sys3(1, fd, (long)b, (long)n); }
+struct nethel_iovec { const void *base; u64 len; };
+static inline long sys_ioctl(int fd, u64 req, void *arg)   { return sys3(16, fd, (long)req, (long)arg); }
+static inline long sys_writev(int fd, const struct nethel_iovec *iov, u64 n) { return sys3(20, fd, (long)iov, (long)n); }
 static inline void sys_exit(long code)                     { sys3(60, code, 0, 0); for (;;) ; }
 
 static inline u64 slen(const char *s) { u64 n = 0; while (s[n]) n++; return n; }

@@ -7,6 +7,7 @@ extern const uint8_t _binary_loop_elf_start[],  _binary_loop_elf_end[];
 extern const uint8_t _binary_sse_elf_start[],   _binary_sse_elf_end[];
 extern const uint8_t _binary_abi_elf_start[],   _binary_abi_elf_end[];
 extern const uint8_t _binary_memt_elf_start[],  _binary_memt_elf_end[];
+extern const uint8_t _binary_iotest_elf_start[], _binary_iotest_elf_end[];
 
 static const struct prog table[] = {
     { "hello", _binary_hello_elf_start, _binary_hello_elf_end },
@@ -16,6 +17,7 @@ static const struct prog table[] = {
     { "sse",   _binary_sse_elf_start,   _binary_sse_elf_end   },
     { "abi",   _binary_abi_elf_start,   _binary_abi_elf_end   },
     { "memt",  _binary_memt_elf_start,  _binary_memt_elf_end  },
+    { "iotest", _binary_iotest_elf_start, _binary_iotest_elf_end },
 };
 #define N ((int)(sizeof(table) / sizeof(table[0])))
 
