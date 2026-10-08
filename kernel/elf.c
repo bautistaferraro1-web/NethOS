@@ -22,7 +22,7 @@ int elf_load(const void *image, uint64_t size, uint64_t space,
     const uint8_t *img = image;
     const struct elf64_ehdr *eh = image;
 
-    if (aux) { aux->phdr = 0; aux->phnum = 0; aux->phent = 0; }
+    if (aux) { aux->phdr = 0; aux->phnum = 0; aux->phent = 0; aux->end = 0; }
     if (size < sizeof(*eh)) return bad("archivo muy chico");
     if (img[0] != 0x7F || img[1] != 'E' || img[2] != 'L' || img[3] != 'F') return bad("magic invalido");
     if (eh->e_ident[4] != 2 || eh->e_ident[5] != 1) return bad("no es ELF64 little-endian");
@@ -53,6 +53,7 @@ int elf_load(const void *image, uint64_t size, uint64_t space,
         uint64_t last  = (ph->p_vaddr + ph->p_memsz + 0xFFF) & ~0xFFFULL;
         if (first < next_free) return bad("segmentos solapados");
         next_free = last;
+        if (aux && ph->p_vaddr + ph->p_memsz > aux->end) aux->end = ph->p_vaddr + ph->p_memsz;
 
         uint64_t flags  = VMM_USER | ((ph->p_flags & PF_W) ? VMM_WRITE : 0);
         uint64_t fstart = ph->p_vaddr, fend = ph->p_vaddr + ph->p_filesz;

@@ -17,7 +17,7 @@ struct elf64_phdr {
 };
 
 /* Datos del ELF cargado que van al auxv (phdr = 0 si los headers no quedaron en memoria) */
-struct elf_aux { uint64_t phdr, phnum, phent; };
+struct elf_aux { uint64_t phdr, phnum, phent, end; };   /* end = fin del ultimo segmento (sin alinear) */
 
 /* Carga los PT_LOAD de 'image' en 'space' (solo dentro de [lo, hi)).
    Devuelve 0 y el punto de entrada, o -1. Llamar con interrupciones desactivadas. */

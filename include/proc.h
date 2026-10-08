@@ -2,6 +2,9 @@
 #define NETHEL_PROC_H
 #include <stdint.h>
 
+#define USER_MMAP_BASE  0x00007F0000000000ULL   /* mmap crece hacia arriba desde aca */
+#define USER_MMAP_LIMIT 0x00007FFF00000000ULL
+
 /* Estado de proceso que Linux/glibc esperan que el kernel recuerde */
 struct proc {
     uint64_t fs_base;        /* TLS (arch_prctl ARCH_SET_FS) */

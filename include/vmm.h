@@ -19,5 +19,6 @@ uint64_t vmm_create_space(void);                              /* 0 si no hay mem
 void     vmm_destroy_space(uint64_t space);                   /* libera tablas y paginas de usuario */
 void     vmm_switch(uint64_t space);                          /* carga CR3 si cambia */
 int      vmm_map_in(uint64_t space, uint64_t virt, uint64_t phys, uint64_t flags);
+int      vmm_unmap_in(uint64_t space, uint64_t virt);                 /* no libera el frame */
 
 #endif

@@ -139,6 +139,8 @@ int vmm_map_in(uint64_t space, uint64_t virt, uint64_t phys, uint64_t flags)
     return map_in((uint64_t *)P2V(space), virt, phys, flags);
 }
 
+int vmm_unmap_in(uint64_t space, uint64_t virt) { return unmap_in((uint64_t *)P2V(space), virt); }
+
 uint64_t vmm_kernel_space(void) { return V2P(kpml4); }
 
 void vmm_switch(uint64_t space)
