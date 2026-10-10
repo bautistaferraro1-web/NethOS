@@ -326,6 +326,23 @@ static uint64_t sys_clock_gettime(uint64_t clk, uint64_t ts)
     return 0;
 }
 
+#define SYS_FSTAT 5
+#define S_IFCHR_ 0020000
+
+/* struct stat de x86_64 Linux: 144 bytes. fd 0/1/2 son el "terminal" (char device) */
+static uint64_t sys_fstat(uint64_t fd, uint64_t st)
+{
+    if (fd > 2) return ERR(EBADF);
+    if (!user_range_ok(st, 144)) return ERR(EFAULT);
+    uint8_t *b = (uint8_t *)st;
+    for (int i = 0; i < 144; i++) b[i] = 0;
+    *(uint64_t *)(b + 16) = 1;                    /* st_nlink   */
+    *(uint32_t *)(b + 24) = S_IFCHR_ | 0620;      /* st_mode    */
+    *(uint64_t *)(b + 40) = (136ULL << 8);        /* st_rdev    */
+    *(int64_t  *)(b + 56) = 1024;                 /* st_blksize */
+    return 0;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -343,6 +360,7 @@ void syscall_dispatch(struct regs *r)
     case SYS_MPROTECT:
         r->rax = sys_mprotect(r->rdi, r->rsi, r->rdx); break;
     case SYS_MUNMAP:     r->rax = sys_munmap(r->rdi, r->rsi); break;
+    case SYS_FSTAT:      r->rax = sys_fstat(r->rdi, r->rsi); break;
     case SYS_CLOCK_GETTIME: r->rax = sys_clock_gettime(r->rdi, r->rsi); break;
     case SYS_EXIT:
     case SYS_EXIT_GROUP:
