@@ -1,3 +1,4 @@
+#define NLIB_MAIN
 #include "nlib.h"
 
 int nmain(int argc, char **argv)
