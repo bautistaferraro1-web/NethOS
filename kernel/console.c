@@ -40,8 +40,11 @@ static void putc_raw(char c)
     if (cy >= H) scroll();
 }
 
+static void ser_putc(char ch);
+
 void console_puts(const char *s)
 {
+    for (const char *q = s; *q; q++) ser_putc(*q);
     uint64_t f = irq_save();
     while (*s) putc_raw(*s++);
     irq_restore(f);
