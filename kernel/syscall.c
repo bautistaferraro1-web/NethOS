@@ -7,6 +7,7 @@
 #include "proc.h"
 #include "pmm.h"
 #include "mem.h"
+#include "timer.h"
 
 #define SYS_READ  0
 #define SYS_WRITE 1
@@ -311,6 +312,20 @@ static uint64_t sys_set_tid(uint64_t addr)
     return (uint64_t)task_id();
 }
 
+#define SYS_CLOCK_GETTIME 228
+
+/* Reloj monotonico a 100 Hz; sirve para cualquier clk_id por ahora */
+static uint64_t sys_clock_gettime(uint64_t clk, uint64_t ts)
+{
+    if (clk > 11) return ERR(EINVAL);
+    if (!user_range_ok(ts, 16)) return ERR(EFAULT);
+    uint64_t t = timer_ticks();
+    uint64_t *p = (uint64_t *)ts;
+    p[0] = t / 100;
+    p[1] = (t % 100) * 10000000ULL;
+    return 0;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -325,8 +340,10 @@ void syscall_dispatch(struct regs *r)
     case SYS_SET_TID:    r->rax = sys_set_tid(r->rdi); break;
     case SYS_BRK:        r->rax = sys_brk(r->rdi); break;
     case SYS_MMAP:       r->rax = sys_mmap(r->rdi, r->rsi, r->rdx, r->r10, r->r8); break;
-    case SYS_MPROTECT:   r->rax = sys_mprotect(r->rdi, r->rsi, r->rdx); break;
+    case SYS_MPROTECT:
+        r->rax = sys_mprotect(r->rdi, r->rsi, r->rdx); break;
     case SYS_MUNMAP:     r->rax = sys_munmap(r->rdi, r->rsi); break;
+    case SYS_CLOCK_GETTIME: r->rax = sys_clock_gettime(r->rdi, r->rsi); break;
     case SYS_EXIT:
     case SYS_EXIT_GROUP:
         console_puts("[kernel] user exit("); console_dec(r->rdi); console_puts(")\n");
@@ -334,7 +351,10 @@ void syscall_dispatch(struct regs *r)
         task_exit();
         for (;;) __asm__ volatile("hlt");
     default:
-        console_puts("[kernel] syscall sin implementar: "); console_dec(r->rax); console_putc('\n');
+        switch (r->rax) {
+        case 273: case 334: case 302: case 318: case 267: case 262: break;   /* esperadas */
+        default: console_puts("[kernel] syscall sin implementar: "); console_dec(r->rax); console_putc('\n');
+        }
         r->rax = ERR(38);                  /* ENOSYS */
     }
 }

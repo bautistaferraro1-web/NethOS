@@ -129,7 +129,7 @@ static uint64_t build_stack(uint64_t frame, const struct uargs *a, uint64_t entr
 /* Se llama con interrupciones desactivadas (el PMM no es seguro con preemption) */
 static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint64_t *rsp)
 {
-    struct elf_aux ai = { 0, 0, 0 };
+    struct elf_aux ai = { 0, 0, 0, 0 };
     uint64_t sp = vmm_create_space();
     if (!sp) { console_puts("user: sin memoria\n"); return -1; }
 
@@ -216,6 +216,23 @@ static void user_task(void *arg)
         "pushq $0x202\n\t"      /* RFLAGS (IF=1) */
         "pushq %2\n\t"          /* CS     */
         "pushq %3\n\t"          /* RIP    */
+        /* ABI de Linux: el proceso arranca con los registros generales en 0
+           (glibc toma rdx como rtld_fini; ademas evita filtrar punteros del kernel) */
+        "xorl %%eax, %%eax\n\t"
+        "xorl %%ebx, %%ebx\n\t"
+        "xorl %%ecx, %%ecx\n\t"
+        "xorl %%edx, %%edx\n\t"
+        "xorl %%esi, %%esi\n\t"
+        "xorl %%edi, %%edi\n\t"
+        "xorl %%ebp, %%ebp\n\t"
+        "xorl %%r8d, %%r8d\n\t"
+        "xorl %%r9d, %%r9d\n\t"
+        "xorl %%r10d, %%r10d\n\t"
+        "xorl %%r11d, %%r11d\n\t"
+        "xorl %%r12d, %%r12d\n\t"
+        "xorl %%r13d, %%r13d\n\t"
+        "xorl %%r14d, %%r14d\n\t"
+        "xorl %%r15d, %%r15d\n\t"
         "iretq\n\t"
         : : "i"(SEL_UDATA), "r"(rsp),
             "i"(SEL_UCODE), "r"(entry) : "memory");
