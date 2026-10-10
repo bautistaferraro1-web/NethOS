@@ -177,6 +177,8 @@ static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint
 /* La llaman exit y el handler de excepciones, siempre con IF=0 */
 void user_cleanup(void)
 {
+    struct proc *pr = task_proc();
+    if (pr) fd_close_all(pr->fds);        /* libera archivos abiertos en cualquier tipo de muerte */
     uint64_t sp = task_get_space();
     task_set_space(vmm_kernel_space());
     if (sp != vmm_kernel_space()) vmm_destroy_space(sp);

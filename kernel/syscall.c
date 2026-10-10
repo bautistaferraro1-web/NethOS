@@ -431,7 +431,6 @@ void syscall_dispatch(struct regs *r)
     case SYS_EXIT_GROUP:
         console_puts("[kernel] user exit("); console_dec(r->rdi); console_puts(")\n");
         user_cleanup();
-        fd_close_all(task_proc()->fds);
         task_exit();
         for (;;) __asm__ volatile("hlt");
     default:
