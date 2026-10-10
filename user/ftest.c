@@ -5,6 +5,7 @@ int nmain(int argc, char **argv)
 {
     (void)argc; (void)argv;
     char buf[128];
+    long d;
 
     print("[ftest] open /hello.txt... ");
     long fd = sys3(2, (long)"/hello.txt", 0, 0);
@@ -31,6 +32,24 @@ int nmain(int argc, char **argv)
     fd = sys3(2, (long)"./hello.txt", 0, 0);
     if (fd < 0) { print("[ftest] open ./hello.txt FALLO\n"); return 1; }
     sys3(3, fd, 0, 0);
+    if (sys3(80, (long)"/etc", 0, 0) != 0) { print("[ftest] chdir /etc FALLO\n"); return 1; }
+    n = sys3(79, (long)buf, sizeof buf, 0);
+    if (n != 5) { print("[ftest] getcwd tras chdir FALLO\n"); return 1; }
+    fd = sys3(2, (long)"hostname", 0, 0);
+    if (fd < 0) { print("[ftest] open relativo FALLO\n"); return 1; }
+    n = sys3(0, fd, (long)buf, 127);
+    if (n <= 0) { print("[ftest] read hostname FALLO\n"); return 1; }
+    buf[n] = 0; print("[ftest] hostname: "); print(buf);
+    sys3(3, fd, 0, 0);
+    fd = sys3(2, (long)"../hello.txt", 0, 0);
+    if (fd < 0) { print("[ftest] open ../hello.txt FALLO\n"); return 1; }
+    sys3(3, fd, 0, 0);
+    if (sys3(80, (long)"..", 0, 0) != 0) { print("[ftest] chdir .. FALLO\n"); return 1; }
+    n = sys3(79, (long)buf, sizeof buf, 0);
+    if (n != 2) { print("[ftest] getcwd tras .. FALLO\n"); return 1; }
+    d = sys3(2, (long)"/", 0, 0);
+    if (d < 0 || sys3(0, d, (long)buf, 16) != -21) { print("[ftest] EISDIR FALLO\n"); return 1; }
+    sys3(3, d, 0, 0);
     print("[ftest] cwd OK\n");
     print("[ftest] todo OK\n");
     return 0;

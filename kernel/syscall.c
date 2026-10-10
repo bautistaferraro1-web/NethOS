@@ -465,14 +465,14 @@ static uint64_t sys_chdir(uint64_t upath)
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
-    if (p[0] == '/' && p[1] == 0) {
-        char *cwd = task_proc()->cwd;
-        cwd[0] = '/'; cwd[1] = 0;
-        return 0;
-    }
-    struct file *f = initramfs_open(p);
-    if (f) { file_put(f); return ERR(ENOTDIR); }
-    return ERR(ENOENT);
+    int d = initramfs_isdir(p);
+    if (d < 0) return ERR(ENOENT);
+    if (!d) return ERR(ENOTDIR);
+    char *cwd = task_proc()->cwd;
+    int i = 0;
+    while (p[i]) { cwd[i] = p[i]; i++; }
+    cwd[i] = 0;
+    return 0;
 }
 
 void syscall_dispatch(struct regs *r)

@@ -30,6 +30,7 @@ static int streq(const char *a, const char *b)
 static void parse(void)
 {
     const uint8_t *p = _binary_initramfs_cpio_start, *end = _binary_initramfs_cpio_end;
+    ents[nents++] = (struct ent){ "", 0, 0, 0040755 };   /* raiz sintetica */
     while (p + 110 <= end && nents < MAX_ENT) {
         if (p[0] != '0' || p[1] != '7' || p[2] != '0' || p[3] != '7' || p[4] != '0' || p[5] != '1') break;
         uint32_t mode = hex8(p + 14), fsz = hex8(p + 54), nsz = hex8(p + 94);
@@ -45,6 +46,7 @@ static void parse(void)
 static int64_t rf_read(struct file *f, void *buf, uint64_t n)
 {
     struct ent *e = f->priv;
+    if ((e->mode & 0170000) == 0040000) return -21;   /* EISDIR */
     if (f->off >= e->size) return 0;
     if (n > e->size - f->off) n = e->size - f->off;
     uint8_t *d = buf;
@@ -98,4 +100,13 @@ struct file *initramfs_open(const char *path)
         }
     }
     return 0;
+}
+
+int initramfs_isdir(const char *path)
+{
+    struct file *f = initramfs_open(path);
+    if (!f) return -1;
+    int d = (((struct ent *)f->priv)->mode & 0170000) == 0040000;
+    file_put(f);
+    return d;
 }
