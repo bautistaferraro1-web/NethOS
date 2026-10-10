@@ -22,6 +22,8 @@
 #define SYS_CHDIR 80
 #define SYS_GETDENTS64 217
 #define SYS_GETPID 39
+#define SYS_FORK 57
+#define SYS_CLONE 56
 #define SYS_WAIT4 61
 #define SYS_GETPPID 110
 #define SYS_IOCTL  16
@@ -514,6 +516,17 @@ void syscall_dispatch(struct regs *r)
     case SYS_CHDIR:  r->rax = sys_chdir(r->rdi); break;
     case SYS_GETDENTS64: r->rax = sys_getdents64(r->rdi, r->rsi, r->rdx); break;
     case 502: r->rax = (uint64_t)user_clone_test(); break;   /* temporal */
+    case SYS_FORK: {
+        int id = user_fork(r);
+        r->rax = id < 0 ? ERR(ENOMEM) : (uint64_t)id;
+        break;
+    }
+    case SYS_CLONE: {                         /* solo el fork clasico (stack 0), como lo usa glibc */
+        if (r->rsi != 0) { r->rax = ERR(EINVAL); break; }
+        int id = user_fork(r);
+        r->rax = id < 0 ? ERR(ENOMEM) : (uint64_t)id;
+        break;
+    }
     case SYS_GETPID:  r->rax = (uint64_t)task_id(); break;
     case SYS_GETPPID: r->rax = (uint64_t)user_ppid(); break;
     case SYS_WAIT4:   r->rax = sys_wait4(r->rdi, r->rsi, r->rdx, r->r10); break;

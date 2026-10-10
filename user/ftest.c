@@ -82,6 +82,22 @@ int nmain(int argc, char **argv)
         if (pg <= 0) { print("[ftest] clone_space FALLO\n"); return 1; }
         print("[ftest] clone_space OK\n");
     }
+    {
+        volatile int x = 5;
+        long pid = sys3(57, 0, 0, 0);
+        if (pid < 0) { print("[ftest] fork FALLO\n"); return 1; }
+        if (pid == 0) {
+            x = 99;
+            if (x != 99) return 1;
+            print("[ftest hijo] hola desde el hijo\n");
+            return 9;
+        }
+        int st = -1;
+        if (sys3(61, pid, (long)&st, 0) != pid) { print("[ftest] fork wait4 FALLO\n"); return 1; }
+        if (st != (9 << 8)) { print("[ftest] fork status FALLO\n"); return 1; }
+        if (x != 5) { print("[ftest] fork: el hijo piso al padre\n"); return 1; }
+        print("[ftest] fork OK\n");
+    }
     print("[ftest] todo OK\n");
     return 0;
 }

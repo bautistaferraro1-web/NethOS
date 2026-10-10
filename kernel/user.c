@@ -12,6 +12,7 @@
 #include "heap.h"
 #include "proc.h"
 #include "file.h"
+#include "idt.h"
 
 #define USER_CODE        0x0000000000400000ULL   /* donde enlazan los ELF estandar */
 #define USER_STACK_PAGES 16
@@ -379,4 +380,65 @@ long user_clone_test(void)
     long r = vmm_clone_selftest();
     irq_restore(f);
     return r;
+}
+
+/* ---- fork ---- */
+extern void fork_return(struct regs *r);
+
+struct forkctx { struct regs regs; uint64_t space; struct proc proc; };
+
+static void copy_words(void *dst, const void *src, uint64_t n)
+{
+    uint64_t *d = dst; const uint64_t *s = src;
+    for (uint64_t i = 0; i < n / 8; i++) d[i] = s[i];
+}
+
+static void fork_task(void *arg)
+{
+    struct forkctx *c = arg;
+    struct regs r;
+    copy_words(&r, &c->regs, sizeof r);
+    r.rax = 0;                                   /* fork() devuelve 0 en el hijo */
+
+    task_mark_user();
+    uint64_t f = irq_save();
+    struct proc *pr = task_proc();
+    copy_words(pr, &c->proc, sizeof *pr);
+    pr->clear_tid = 0;
+    pr->exit_code = 11;
+    task_set_space(c->space);                    /* a partir de aca CR3 = clon */
+    task_set_fs(pr->fs_base);
+    kfree(c);
+    irq_restore(f);
+
+    fork_return(&r);
+    for (;;) __asm__ volatile("hlt");
+}
+
+int user_fork(const struct regs *r)
+{
+    uint64_t f = irq_save();
+    struct forkctx *c = kmalloc(sizeof *c);
+    if (!c) { irq_restore(f); return -1; }
+    uint64_t ns = vmm_clone_space(task_get_space());
+    if (!ns) { kfree(c); irq_restore(f); return -1; }
+
+    copy_words(&c->regs, r, sizeof c->regs);
+    c->space = ns;
+    copy_words(&c->proc, task_proc(), sizeof c->proc);
+    for (int i = 0; i < NFD; i++) file_get(c->proc.fds[i]);
+    fg++;
+
+    int id = task_create("fork", fork_task, c);
+    if (id < 0) {
+        for (int i = 0; i < NFD; i++) file_put(c->proc.fds[i]);
+        vmm_destroy_space(ns);
+        kfree(c);
+        fg--;
+        irq_restore(f);
+        return -1;
+    }
+    pt_add(id, task_id());
+    irq_restore(f);
+    return id;
 }

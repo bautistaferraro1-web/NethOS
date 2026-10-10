@@ -91,3 +91,28 @@ syscall_entry:
     pushq $0x23                        /* cs  = SEL_UCODE */
     pushq %rcx                         /* rip */
     jmp  isr128
+
+/* fork_return(struct regs *r): vuelve a Ring 3 con el frame r (mismo orden que isr_common) */
+.section .text
+.code64
+.global fork_return
+fork_return:
+    cli
+    mov  %rdi, %rsp
+    pop  %r15
+    pop  %r14
+    pop  %r13
+    pop  %r12
+    pop  %r11
+    pop  %r10
+    pop  %r9
+    pop  %r8
+    pop  %rbp
+    pop  %rdi
+    pop  %rsi
+    pop  %rdx
+    pop  %rcx
+    pop  %rbx
+    pop  %rax
+    add  $16, %rsp
+    iretq

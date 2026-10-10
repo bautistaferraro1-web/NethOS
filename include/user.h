@@ -22,4 +22,7 @@ int  user_ppid(void);
 
 long user_clone_test(void);   /* temporal */
 
+struct regs;
+int  user_fork(const struct regs *r);   /* id del hijo o -1 */
+
 #endif
