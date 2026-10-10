@@ -20,4 +20,6 @@ int  user_spawn_args(const char *name, const struct uargs *args);   /* -1 si no 
 int  user_wait(int pid, int *status, int nohang);   /* pid hijo, 0 (WNOHANG) o -10 (ECHILD) */
 int  user_ppid(void);
 
+long user_clone_test(void);   /* temporal */
+
 #endif

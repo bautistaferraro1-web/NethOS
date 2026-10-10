@@ -77,6 +77,11 @@ int nmain(int argc, char **argv)
         if (sys3(61, -1, (long)&st, 1) != -10) { print("[ftest] ECHILD FALLO\n"); return 1; }
         print("[ftest] wait4 OK\n");
     }
+    {
+        long pg = sys3(502, 0, 0, 0);
+        if (pg <= 0) { print("[ftest] clone_space FALLO\n"); return 1; }
+        print("[ftest] clone_space OK\n");
+    }
     print("[ftest] todo OK\n");
     return 0;
 }

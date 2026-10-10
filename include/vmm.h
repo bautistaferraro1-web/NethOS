@@ -21,4 +21,7 @@ void     vmm_switch(uint64_t space);                          /* carga CR3 si ca
 int      vmm_map_in(uint64_t space, uint64_t virt, uint64_t phys, uint64_t flags);
 int      vmm_unmap_in(uint64_t space, uint64_t virt);                 /* no libera el frame */
 
+uint64_t vmm_clone_space(uint64_t src);   /* copia la mitad de usuario; 0 si falla; con IF=0 */
+long     vmm_clone_selftest(void);
+
 #endif

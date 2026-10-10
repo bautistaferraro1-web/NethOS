@@ -371,3 +371,12 @@ int user_spawn_name(const char *name)           /* desde el shell del kernel: ar
     a.argc = 1;
     return user_spawn_args(name, &a);
 }
+
+/* TEMPORAL: syscall 502 de prueba para vmm_clone_space */
+long user_clone_test(void)
+{
+    uint64_t f = irq_save();
+    long r = vmm_clone_selftest();
+    irq_restore(f);
+    return r;
+}

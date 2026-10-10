@@ -184,6 +184,79 @@ void vmm_destroy_space(uint64_t space)
     pmm_free_page(space);
 }
 
+/* Copia completa de la mitad de usuario. Con IF=0. Devuelve el nuevo espacio o 0. */
+uint64_t vmm_clone_space(uint64_t src)
+{
+    uint64_t ns = vmm_create_space();
+    if (!ns) return 0;
+    uint64_t *r3 = (uint64_t *)P2V(src);
+    for (uint64_t i3 = 0; i3 < 256; i3++) {
+        if (!(r3[i3] & VMM_PRESENT)) continue;
+        uint64_t *l2 = (uint64_t *)P2V(r3[i3] & ADDR_MASK);
+        for (uint64_t i2 = 0; i2 < 512; i2++) {
+            if (!(l2[i2] & VMM_PRESENT) || (l2[i2] & VMM_HUGE)) continue;
+            uint64_t *l1 = (uint64_t *)P2V(l2[i2] & ADDR_MASK);
+            for (uint64_t i1 = 0; i1 < 512; i1++) {
+                if (!(l1[i1] & VMM_PRESENT) || (l1[i1] & VMM_HUGE)) continue;
+                uint64_t *l0 = (uint64_t *)P2V(l1[i1] & ADDR_MASK);
+                for (uint64_t i0 = 0; i0 < 512; i0++) {
+                    uint64_t e = l0[i0];
+                    if (!(e & VMM_PRESENT)) continue;
+                    uint64_t va = (i3 << 39) | (i2 << 30) | (i1 << 21) | (i0 << 12);
+                    uint64_t f = pmm_alloc_page();
+                    if (!f) { vmm_destroy_space(ns); return 0; }
+                    volatile uint64_t *d = (volatile uint64_t *)P2V(f);
+                    volatile uint64_t *s = (volatile uint64_t *)P2V(e & ADDR_MASK);
+                    for (int k = 0; k < 512; k++) d[k] = s[k];
+                    if (map_in((uint64_t *)P2V(ns), va, f, e & (VMM_WRITE | VMM_USER))) {
+                        pmm_free_page(f);
+                        vmm_destroy_space(ns);
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+    return ns;
+}
+
+/* Test: clona el espacio activo, compara pagina a pagina y lo destruye. -1 = fallo */
+long vmm_clone_selftest(void)
+{
+    uint64_t src = V2P(cur);
+    uint64_t ns = vmm_clone_space(src);
+    if (!ns) return -1;
+    long pages = 0, bad = 0;
+    uint64_t *r3 = cur;
+    for (uint64_t i3 = 0; i3 < 256; i3++) {
+        if (!(r3[i3] & VMM_PRESENT)) continue;
+        uint64_t *l2 = (uint64_t *)P2V(r3[i3] & ADDR_MASK);
+        for (uint64_t i2 = 0; i2 < 512; i2++) {
+            if (!(l2[i2] & VMM_PRESENT) || (l2[i2] & VMM_HUGE)) continue;
+            uint64_t *l1 = (uint64_t *)P2V(l2[i2] & ADDR_MASK);
+            for (uint64_t i1 = 0; i1 < 512; i1++) {
+                if (!(l1[i1] & VMM_PRESENT) || (l1[i1] & VMM_HUGE)) continue;
+                uint64_t *l0 = (uint64_t *)P2V(l1[i1] & ADDR_MASK);
+                for (uint64_t i0 = 0; i0 < 512; i0++) {
+                    if (!(l0[i0] & VMM_PRESENT)) continue;
+                    uint64_t va = (i3 << 39) | (i2 << 30) | (i1 << 21) | (i0 << 12);
+                    uint64_t p2;
+                    if (translate_in((uint64_t *)P2V(ns), va, &p2)) { bad++; continue; }
+                    p2 &= ~0xFFFULL;
+                    uint64_t p1 = l0[i0] & ADDR_MASK;
+                    if (p1 == p2) bad++;                         /* no puede compartir frame */
+                    volatile uint64_t *a = (volatile uint64_t *)P2V(p1);
+                    volatile uint64_t *b = (volatile uint64_t *)P2V(p2);
+                    for (int k = 0; k < 512; k++) if (a[k] != b[k]) { bad++; break; }
+                    pages++;
+                }
+            }
+        }
+    }
+    vmm_destroy_space(ns);
+    return bad ? -1 : pages;
+}
+
 void vmm_init(void)
 {
     kpml4 = table_alloc();

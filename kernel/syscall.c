@@ -513,6 +513,7 @@ void syscall_dispatch(struct regs *r)
     case SYS_GETCWD: r->rax = sys_getcwd(r->rdi, r->rsi); break;
     case SYS_CHDIR:  r->rax = sys_chdir(r->rdi); break;
     case SYS_GETDENTS64: r->rax = sys_getdents64(r->rdi, r->rsi, r->rdx); break;
+    case 502: r->rax = (uint64_t)user_clone_test(); break;   /* temporal */
     case SYS_GETPID:  r->rax = (uint64_t)task_id(); break;
     case SYS_GETPPID: r->rax = (uint64_t)user_ppid(); break;
     case SYS_WAIT4:   r->rax = sys_wait4(r->rdi, r->rsi, r->rdx, r->r10); break;
