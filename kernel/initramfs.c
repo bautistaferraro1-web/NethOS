@@ -80,7 +80,53 @@ static int64_t rf_lseek(struct file *f, int64_t off, int whence)
     return base + off;
 }
 
-static const struct file_ops rf_ops = { rf_read, 0, 0, rf_stat, rf_lseek };
+static int is_dir_ent(const struct ent *e) { return (e->mode & 0170000) == 0040000; }
+
+/* cursor f->off: 0 ".", 1 "..", 2+i = ents[i] */
+static int64_t rf_getdents(struct file *f, void *buf, uint64_t n)
+{
+    struct ent *d = f->priv;
+    if (!is_dir_ent(d)) return -20;                     /* ENOTDIR */
+    uint64_t nlen = 0;
+    while (d->name[nlen]) nlen++;
+    uint8_t *out = buf;
+    uint64_t used = 0;
+    for (uint64_t cur = f->off; cur < 2 + (uint64_t)nents; cur++) {
+        const char *nm; uint8_t type; uint64_t ino;
+        if (cur < 2) { nm = cur ? ".." : "."; type = 4; ino = 1; }
+        else {
+            struct ent *ch = &ents[cur - 2];
+            const char *cn = ch->name;
+            if (ch == d || !cn[0]) { f->off = cur + 1; continue; }
+            if (nlen) {
+                uint64_t k = 0;
+                while (k < nlen && cn[k] == d->name[k]) k++;
+                if (k != nlen || cn[nlen] != '/') { f->off = cur + 1; continue; }
+                nm = cn + nlen + 1;
+            } else nm = cn;
+            int slash = !nm[0];
+            for (const char *q = nm; *q; q++) if (*q == '/') slash = 1;
+            if (slash) { f->off = cur + 1; continue; }
+            type = is_dir_ent(ch) ? 4 : 8;
+            ino = cur;
+        }
+        uint64_t l = 0;
+        while (nm[l]) l++;
+        uint64_t reclen = (19 + l + 1 + 7) & ~7ULL;
+        if (used + reclen > n) { if (!used) return -22; break; }
+        uint8_t *r = out + used;
+        *(uint64_t *)r = ino;
+        *(int64_t  *)(r + 8) = (int64_t)(cur + 1);
+        *(uint16_t *)(r + 16) = (uint16_t)reclen;
+        r[18] = type;
+        for (uint64_t i = 0; i <= l; i++) r[19 + i] = (uint8_t)nm[i];
+        used += reclen;
+        f->off = cur + 1;
+    }
+    return (int64_t)used;
+}
+
+static const struct file_ops rf_ops = { rf_read, 0, 0, rf_stat, rf_lseek, rf_getdents };
 
 struct file *initramfs_open(const char *path)
 {

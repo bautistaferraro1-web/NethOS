@@ -53,7 +53,7 @@ static int64_t con_stat(struct file *f, void *st)
     return 0;
 }
 
-static const struct file_ops con_ops = { con_read, con_write, con_ioctl, con_stat };
+static const struct file_ops con_ops = { con_read, con_write, con_ioctl, con_stat, 0, 0 };
 struct file console_file = { &con_ops, 1, 0, 0 };
 
 struct file *file_get(struct file *f) { if (f) f->refcount++; return f; }

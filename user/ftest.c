@@ -4,7 +4,7 @@
 int nmain(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    char buf[128];
+    char buf[256];
     long d;
 
     print("[ftest] open /hello.txt... ");
@@ -49,6 +49,18 @@ int nmain(int argc, char **argv)
     if (n != 2) { print("[ftest] getcwd tras .. FALLO\n"); return 1; }
     d = sys3(2, (long)"/", 0, 0);
     if (d < 0 || sys3(0, d, (long)buf, 16) != -21) { print("[ftest] EISDIR FALLO\n"); return 1; }
+    sys3(3, d, 0, 0);
+    print("[ftest] ls /:\n");
+    d = sys3(2, (long)"/", 0, 0);
+    if (d < 0) { print("[ftest] open / FALLO\n"); return 1; }
+    n = sys3(217, d, (long)buf, sizeof buf);
+    if (n <= 0) { print("[ftest] getdents64 FALLO\n"); return 1; }
+    for (long off = 0; off < n; ) {
+        unsigned short rl = *(unsigned short *)(buf + off + 16);
+        print("  "); print(buf + off + 19); print("\n");
+        off += rl;
+    }
+    if (sys3(217, d, (long)buf, sizeof buf) != 0) { print("[ftest] getdents64 fin FALLO\n"); return 1; }
     sys3(3, d, 0, 0);
     print("[ftest] cwd OK\n");
     print("[ftest] todo OK\n");

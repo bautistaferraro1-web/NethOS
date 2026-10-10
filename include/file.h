@@ -21,6 +21,7 @@ struct file_ops {
     int64_t (*ioctl)(struct file *f, uint64_t req, uint64_t arg);
     int64_t (*stat)(struct file *f, void *st144);   /* st ya en cero */
     int64_t (*lseek)(struct file *f, int64_t off, int whence);
+    int64_t (*getdents)(struct file *f, void *buf, uint64_t n);
 };
 
 struct file {

@@ -20,6 +20,7 @@
 #define SYS_OPENAT 257
 #define SYS_GETCWD 79
 #define SYS_CHDIR 80
+#define SYS_GETDENTS64 217
 #define SYS_IOCTL  16
 #define SYS_WRITEV 20
 #define SYS_YIELD 24
@@ -475,6 +476,15 @@ static uint64_t sys_chdir(uint64_t upath)
     return 0;
 }
 
+static uint64_t sys_getdents64(uint64_t fd, uint64_t buf, uint64_t count)
+{
+    struct file *f = cur_fd(fd);
+    if (!f) return ERR(EBADF);
+    if (!f->ops->getdents) return ERR(ENOTDIR);
+    if (!user_range_ok(buf, count)) return ERR(EFAULT);
+    return (uint64_t)f->ops->getdents(f, (void *)buf, count);
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -487,6 +497,7 @@ void syscall_dispatch(struct regs *r)
     case SYS_LSEEK:  r->rax = sys_lseek(r->rdi, r->rsi, r->rdx); break;
     case SYS_GETCWD: r->rax = sys_getcwd(r->rdi, r->rsi); break;
     case SYS_CHDIR:  r->rax = sys_chdir(r->rdi); break;
+    case SYS_GETDENTS64: r->rax = sys_getdents64(r->rdi, r->rsi, r->rdx); break;
     case SYS_IOCTL:  r->rax = sys_ioctl(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITEV: r->rax = sys_writev(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
