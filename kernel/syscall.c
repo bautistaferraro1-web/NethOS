@@ -6,6 +6,7 @@
 #include "keyboard.h"
 #include "proc.h"
 #include "file.h"
+#include "initramfs.h"
 #include "pmm.h"
 #include "mem.h"
 #include "timer.h"
@@ -13,6 +14,10 @@
 #define SYS_READ  0
 #define SYS_WRITE 1
 #define SYS_CLOSE 3
+#define SYS_STAT 4
+#define SYS_OPEN 2
+#define SYS_LSEEK 8
+#define SYS_OPENAT 257
 #define SYS_IOCTL  16
 #define SYS_WRITEV 20
 #define SYS_YIELD 24
@@ -340,12 +345,74 @@ static uint64_t sys_clock_gettime(uint64_t clk, uint64_t ts)
 
 /* struct stat de x86_64 Linux: 144 bytes. fd 0/1/2 son el "terminal" (char device) */
 
+#define EMFILE 24
+#define ESPIPE 29
+#define EROFS  30
+#define ENAMETOOLONG 36
+#define PATH_MAX_K 128
+
+/* -1 = fault, -2 = demasiado largo */
+static int copy_path(char *dst, uint64_t src)
+{
+    for (int i = 0; i < PATH_MAX_K; i++) {
+        if (!user_range_ok(src + i, 1)) return -1;
+        dst[i] = ((const char *)src)[i];
+        if (!dst[i]) return 0;
+    }
+    return -2;
+}
+
+static uint64_t do_open(uint64_t upath, uint64_t flags)
+{
+    char p[PATH_MAX_K];
+    int r = copy_path(p, upath);
+    if (r == -1) return ERR(EFAULT);
+    if (r == -2) return ERR(ENAMETOOLONG);
+    if (flags & 3) return ERR(EROFS);                /* solo lectura por ahora */
+    struct file *f = initramfs_open(p);
+    if (!f) return ERR(ENOENT);
+    int fd = fd_install(task_proc()->fds, f);
+    if (fd < 0) { file_put(f); return ERR(EMFILE); }
+    return (uint64_t)fd;
+}
+
+static uint64_t sys_open(uint64_t path, uint64_t flags) { return do_open(path, flags); }
+/* dirfd se ignora: todo es relativo a / */
+static uint64_t sys_openat(uint64_t dirfd, uint64_t path, uint64_t flags) { (void)dirfd; return do_open(path, flags); }
+
+static uint64_t sys_stat(uint64_t upath, uint64_t st)
+{
+    char p[PATH_MAX_K];
+    int r = copy_path(p, upath);
+    if (r == -1) return ERR(EFAULT);
+    if (r == -2) return ERR(ENAMETOOLONG);
+    if (!user_range_ok(st, 144)) return ERR(EFAULT);
+    struct file *f = initramfs_open(p);
+    if (!f) return ERR(ENOENT);
+    for (int i = 0; i < 144; i++) ((uint8_t *)st)[i] = 0;
+    uint64_t rv = (uint64_t)f->ops->stat(f, (void *)st);
+    file_put(f);
+    return rv;
+}
+
+static uint64_t sys_lseek(uint64_t fd, uint64_t off, uint64_t whence)
+{
+    struct file *f = cur_fd(fd);
+    if (!f) return ERR(EBADF);
+    if (!f->ops->lseek) return ERR(ESPIPE);
+    return (uint64_t)f->ops->lseek(f, (int64_t)off, (int)whence);
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
     case SYS_READ:  r->rax = sys_read(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITE: r->rax = sys_write(r->rdi, r->rsi, r->rdx); break;
     case SYS_CLOSE: r->rax = sys_close(r->rdi); break;
+    case SYS_OPEN:   r->rax = sys_open(r->rdi, r->rsi); break;
+    case SYS_OPENAT: r->rax = sys_openat(r->rdi, r->rsi, r->rdx); break;
+    case SYS_STAT:   r->rax = sys_stat(r->rdi, r->rsi); break;
+    case SYS_LSEEK:  r->rax = sys_lseek(r->rdi, r->rsi, r->rdx); break;
     case SYS_IOCTL:  r->rax = sys_ioctl(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITEV: r->rax = sys_writev(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
