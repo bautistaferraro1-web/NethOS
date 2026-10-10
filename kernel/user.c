@@ -11,6 +11,7 @@
 #include "keyboard.h"
 #include "heap.h"
 #include "proc.h"
+#include "file.h"
 
 #define USER_CODE        0x0000000000400000ULL   /* donde enlazan los ELF estandar */
 #define USER_STACK_PAGES 16
@@ -167,6 +168,7 @@ static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint
         uint64_t end = which >= PROG_TABLE ? ai.end : USER_CODE + 4096;
         pr->brk_start = pr->brk_cur = (end + 0xFFFULL) & ~0xFFFULL;
         pr->mmap_next = USER_MMAP_BASE;
+        fd_init_std(pr->fds);
     }
     task_set_space(sp);                       /* a partir de aca CR3 = espacio del proceso */
     return 0;

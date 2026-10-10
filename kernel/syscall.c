@@ -5,12 +5,14 @@
 #include "user.h"
 #include "keyboard.h"
 #include "proc.h"
+#include "file.h"
 #include "pmm.h"
 #include "mem.h"
 #include "timer.h"
 
 #define SYS_READ  0
 #define SYS_WRITE 1
+#define SYS_CLOSE 3
 #define SYS_IOCTL  16
 #define SYS_WRITEV 20
 #define SYS_YIELD 24
@@ -44,41 +46,34 @@ static int user_range_ok(uint64_t p, uint64_t len)
     return 1;
 }
 
+#define TCGETS 0x5401
+#define KTERMIOS_SIZE 36
+#define IOV_MAX 1024
+struct nethel_iovec { uint64_t base, len; };
+
+static struct file *cur_fd(uint64_t fd) { return fd_lookup(task_proc()->fds, fd); }
+
 static uint64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len)
 {
-    if (fd != 1 && fd != 2) return ERR(EBADF);
+    struct file *f = cur_fd(fd);
+    if (!f || !f->ops->write) return ERR(EBADF);
     if (!user_range_ok(buf, len)) return ERR(EFAULT);
-    const char *s = (const char *)buf;
-    for (uint64_t i = 0; i < len; i++) console_putc(s[i]);
-    return len;
+    return (uint64_t)f->ops->write(f, (const void *)buf, len);
 }
 
-/* Bloquea hasta que haya al menos una tecla; devuelve lo que haya (max len) */
 static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len)
 {
-    if (fd != 0) return ERR(EBADF);
+    struct file *f = cur_fd(fd);
+    if (!f || !f->ops->read) return ERR(EBADF);
     if (len == 0) return 0;
     if (!user_range_ok(buf, len)) return ERR(EFAULT);
-
-    int c;
-    while ((c = keyboard_getc()) < 0) {
-        if (task_killed()) user_kill_self();
-        __asm__ volatile("sti; hlt; cli" : : : "memory");   /* dormir hasta una IRQ */
-    }
-
-    char *d = (char *)buf;
-    uint64_t n = 0;
-    d[n++] = (char)c;
-    while (n < len && (c = keyboard_getc()) >= 0) d[n++] = (char)c;
-    return n;
+    return (uint64_t)f->ops->read(f, (void *)buf, len);
 }
-
-struct nethel_iovec { uint64_t base, len; };
-#define IOV_MAX 1024
 
 static uint64_t sys_writev(uint64_t fd, uint64_t uiov, uint64_t cnt)
 {
-    if (fd != 1 && fd != 2) return ERR(EBADF);
+    struct file *f = cur_fd(fd);
+    if (!f || !f->ops->write) return ERR(EBADF);
     if (cnt > IOV_MAX) return ERR(EINVAL);
     if (cnt == 0) return 0;
     if (!user_range_ok(uiov, cnt * sizeof(struct nethel_iovec))) return ERR(EFAULT);
@@ -91,25 +86,39 @@ static uint64_t sys_writev(uint64_t fd, uint64_t uiov, uint64_t cnt)
         total += iov[i].len;
     }
     for (uint64_t i = 0; i < cnt; i++) {
-        const char *s = (const char *)iov[i].base;
-        for (uint64_t j = 0; j < iov[i].len; j++) console_putc(s[j]);
+        if (!iov[i].len) continue;
+        int64_t w = f->ops->write(f, (const void *)iov[i].base, iov[i].len);
+        if (w < 0) return (uint64_t)w;
     }
     return total;
 }
 
-#define TCGETS 0x5401
-#define KTERMIOS_SIZE 36        /* struct termios del kernel: lo que glibc reserva */
-
 static uint64_t sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg)
 {
-    if (fd > 2) return ERR(EBADF);
-    if (req == TCGETS) {
-        if (!user_range_ok(arg, KTERMIOS_SIZE)) return ERR(EFAULT);
-        for (int i = 0; i < KTERMIOS_SIZE; i++) ((uint8_t *)arg)[i] = 0;
-        return 0;
-    }
-    return ERR(EINVAL);
+    struct file *f = cur_fd(fd);
+    if (!f) return ERR(EBADF);
+    if (!f->ops->ioctl) return ERR(ENOTTY);
+    if (req == TCGETS && !user_range_ok(arg, KTERMIOS_SIZE)) return ERR(EFAULT);
+    return (uint64_t)f->ops->ioctl(f, req, arg);
 }
+
+static uint64_t sys_fstat(uint64_t fd, uint64_t st)
+{
+    struct file *f = cur_fd(fd);
+    if (!f) return ERR(EBADF);
+    if (!user_range_ok(st, 144)) return ERR(EFAULT);
+    for (int i = 0; i < 144; i++) ((uint8_t *)st)[i] = 0;
+    return f->ops->stat ? (uint64_t)f->ops->stat(f, (void *)st) : ERR(EINVAL);
+}
+
+static uint64_t sys_close(uint64_t fd) { return (uint64_t)(int64_t)fd_close(task_proc()->fds, fd); }
+
+
+/* Bloquea hasta que haya al menos una tecla; devuelve lo que haya (max len) */
+
+
+
+
 
 /* Copia un nombre del usuario (max 15 chars), validando cada byte */
 static int copy_name(char *dst, uint64_t src)
@@ -330,24 +339,13 @@ static uint64_t sys_clock_gettime(uint64_t clk, uint64_t ts)
 #define S_IFCHR_ 0020000
 
 /* struct stat de x86_64 Linux: 144 bytes. fd 0/1/2 son el "terminal" (char device) */
-static uint64_t sys_fstat(uint64_t fd, uint64_t st)
-{
-    if (fd > 2) return ERR(EBADF);
-    if (!user_range_ok(st, 144)) return ERR(EFAULT);
-    uint8_t *b = (uint8_t *)st;
-    for (int i = 0; i < 144; i++) b[i] = 0;
-    *(uint64_t *)(b + 16) = 1;                    /* st_nlink   */
-    *(uint32_t *)(b + 24) = S_IFCHR_ | 0620;      /* st_mode    */
-    *(uint64_t *)(b + 40) = (136ULL << 8);        /* st_rdev    */
-    *(int64_t  *)(b + 56) = 1024;                 /* st_blksize */
-    return 0;
-}
 
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
     case SYS_READ:  r->rax = sys_read(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITE: r->rax = sys_write(r->rdi, r->rsi, r->rdx); break;
+    case SYS_CLOSE: r->rax = sys_close(r->rdi); break;
     case SYS_IOCTL:  r->rax = sys_ioctl(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITEV: r->rax = sys_writev(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
@@ -366,6 +364,7 @@ void syscall_dispatch(struct regs *r)
     case SYS_EXIT_GROUP:
         console_puts("[kernel] user exit("); console_dec(r->rdi); console_puts(")\n");
         user_cleanup();
+        fd_close_all(task_proc()->fds);
         task_exit();
         for (;;) __asm__ volatile("hlt");
     default:
