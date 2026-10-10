@@ -14,6 +14,7 @@ struct proc {
     uint64_t brk_cur;
     uint64_t mmap_next;      /* paso 3: proxima direccion libre para mmap */
     struct file *fds[NFD];
+    char cwd[128];
 };
 
 static inline void proc_clear(struct proc *p)

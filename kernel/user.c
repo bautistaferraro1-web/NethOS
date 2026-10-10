@@ -169,6 +169,7 @@ static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint
         pr->brk_start = pr->brk_cur = (end + 0xFFFULL) & ~0xFFFULL;
         pr->mmap_next = USER_MMAP_BASE;
         fd_init_std(pr->fds);
+        pr->cwd[0] = '/'; pr->cwd[1] = 0;
     }
     task_set_space(sp);                       /* a partir de aca CR3 = espacio del proceso */
     return 0;

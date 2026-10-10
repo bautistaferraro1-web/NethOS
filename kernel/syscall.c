@@ -18,6 +18,8 @@
 #define SYS_OPEN 2
 #define SYS_LSEEK 8
 #define SYS_OPENAT 257
+#define SYS_GETCWD 79
+#define SYS_CHDIR 80
 #define SYS_IOCTL  16
 #define SYS_WRITEV 20
 #define SYS_YIELD 24
@@ -362,10 +364,51 @@ static int copy_path(char *dst, uint64_t src)
     return -2;
 }
 
+#define ENOTDIR 20
+#define ERANGE  34
+
+/* Ruta del usuario -> absoluta y normalizada. 0 ok, -1 fault, -2 larga */
+static int user_path(char *out, uint64_t src)
+{
+    char raw[PATH_MAX_K], comb[2 * PATH_MAX_K];
+    int r = copy_path(raw, src);
+    if (r) return r;
+    int n = 0;
+    if (raw[0] != '/') {
+        for (const char *c = task_proc()->cwd; *c; ) comb[n++] = *c++;
+        comb[n++] = '/';
+    }
+    for (const char *c = raw; *c; ) comb[n++] = *c++;
+    comb[n] = 0;
+
+    int len = 0;
+    const char *p = comb;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *q = p;
+        while (*q && *q != '/') q++;
+        int cl = (int)(q - p);
+        if (cl == 1 && p[0] == '.') { }
+        else if (cl == 2 && p[0] == '.' && p[1] == '.') {
+            while (len > 0 && out[len - 1] != '/') len--;
+            if (len > 0) len--;
+        } else {
+            if (len + 1 + cl >= PATH_MAX_K) return -2;
+            out[len++] = '/';
+            for (int i = 0; i < cl; i++) out[len++] = p[i];
+        }
+        p = q;
+    }
+    if (len == 0) out[len++] = '/';
+    out[len] = 0;
+    return 0;
+}
+
 static uint64_t do_open(uint64_t upath, uint64_t flags)
 {
     char p[PATH_MAX_K];
-    int r = copy_path(p, upath);
+    int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
     if (flags & 3) return ERR(EROFS);                /* solo lectura por ahora */
@@ -383,7 +426,7 @@ static uint64_t sys_openat(uint64_t dirfd, uint64_t path, uint64_t flags) { (voi
 static uint64_t sys_stat(uint64_t upath, uint64_t st)
 {
     char p[PATH_MAX_K];
-    int r = copy_path(p, upath);
+    int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
     if (!user_range_ok(st, 144)) return ERR(EFAULT);
@@ -403,6 +446,35 @@ static uint64_t sys_lseek(uint64_t fd, uint64_t off, uint64_t whence)
     return (uint64_t)f->ops->lseek(f, (int64_t)off, (int)whence);
 }
 
+static uint64_t sys_getcwd(uint64_t buf, uint64_t size)
+{
+    const char *cwd = task_proc()->cwd;
+    uint64_t len = 0;
+    while (cwd[len]) len++;
+    len++;
+    if (size < len) return ERR(ERANGE);
+    if (!user_range_ok(buf, len)) return ERR(EFAULT);
+    for (uint64_t i = 0; i < len; i++) ((char *)buf)[i] = cwd[i];
+    return len;
+}
+
+/* Sin directorios en el initramfs todavia: solo "/" es valido */
+static uint64_t sys_chdir(uint64_t upath)
+{
+    char p[PATH_MAX_K];
+    int r = user_path(p, upath);
+    if (r == -1) return ERR(EFAULT);
+    if (r == -2) return ERR(ENAMETOOLONG);
+    if (p[0] == '/' && p[1] == 0) {
+        char *cwd = task_proc()->cwd;
+        cwd[0] = '/'; cwd[1] = 0;
+        return 0;
+    }
+    struct file *f = initramfs_open(p);
+    if (f) { file_put(f); return ERR(ENOTDIR); }
+    return ERR(ENOENT);
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -413,6 +485,8 @@ void syscall_dispatch(struct regs *r)
     case SYS_OPENAT: r->rax = sys_openat(r->rdi, r->rsi, r->rdx); break;
     case SYS_STAT:   r->rax = sys_stat(r->rdi, r->rsi); break;
     case SYS_LSEEK:  r->rax = sys_lseek(r->rdi, r->rsi, r->rdx); break;
+    case SYS_GETCWD: r->rax = sys_getcwd(r->rdi, r->rsi); break;
+    case SYS_CHDIR:  r->rax = sys_chdir(r->rdi); break;
     case SYS_IOCTL:  r->rax = sys_ioctl(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITEV: r->rax = sys_writev(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
