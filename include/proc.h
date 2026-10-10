@@ -15,6 +15,7 @@ struct proc {
     uint64_t mmap_next;      /* paso 3: proxima direccion libre para mmap */
     struct file *fds[NFD];
     char cwd[128];
+    int  exit_code;          /* status estilo wait(): (n<<8) o numero de senal */
 };
 
 static inline void proc_clear(struct proc *p)

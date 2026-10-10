@@ -21,6 +21,9 @@
 #define SYS_GETCWD 79
 #define SYS_CHDIR 80
 #define SYS_GETDENTS64 217
+#define SYS_GETPID 39
+#define SYS_WAIT4 61
+#define SYS_GETPPID 110
 #define SYS_IOCTL  16
 #define SYS_WRITEV 20
 #define SYS_YIELD 24
@@ -188,6 +191,7 @@ static uint64_t sys_wait(uint64_t id)
         yield();
         __asm__ volatile("sti; hlt; cli" : : : "memory");
     }
+    user_wait((int)id, 0, 1);               /* cosechar la entrada de la tabla */
     return 0;
 }
 
@@ -485,6 +489,17 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t buf, uint64_t count)
     return (uint64_t)f->ops->getdents(f, (void *)buf, count);
 }
 
+static uint64_t sys_wait4(uint64_t pid, uint64_t ust, uint64_t opt, uint64_t ru)
+{
+    (void)ru;
+    if (opt & ~1ULL) return ERR(EINVAL);                /* solo WNOHANG */
+    if (ust && !user_range_ok(ust, 4)) return ERR(EFAULT);
+    int st = 0;
+    int r = user_wait((int)pid, &st, (int)(opt & 1));
+    if (r > 0 && ust) *(int *)ust = st;
+    return (uint64_t)(int64_t)r;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -498,6 +513,9 @@ void syscall_dispatch(struct regs *r)
     case SYS_GETCWD: r->rax = sys_getcwd(r->rdi, r->rsi); break;
     case SYS_CHDIR:  r->rax = sys_chdir(r->rdi); break;
     case SYS_GETDENTS64: r->rax = sys_getdents64(r->rdi, r->rsi, r->rdx); break;
+    case SYS_GETPID:  r->rax = (uint64_t)task_id(); break;
+    case SYS_GETPPID: r->rax = (uint64_t)user_ppid(); break;
+    case SYS_WAIT4:   r->rax = sys_wait4(r->rdi, r->rsi, r->rdx, r->r10); break;
     case SYS_IOCTL:  r->rax = sys_ioctl(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITEV: r->rax = sys_writev(r->rdi, r->rsi, r->rdx); break;
     case SYS_YIELD: yield(); r->rax = 0; break;
@@ -515,6 +533,7 @@ void syscall_dispatch(struct regs *r)
     case SYS_EXIT:
     case SYS_EXIT_GROUP:
         console_puts("[kernel] user exit("); console_dec(r->rdi); console_puts(")\n");
+        task_proc()->exit_code = (int)((r->rdi & 0xFF) << 8);
         user_cleanup();
         task_exit();
         for (;;) __asm__ volatile("hlt");

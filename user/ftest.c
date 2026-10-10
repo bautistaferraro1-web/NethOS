@@ -4,6 +4,7 @@
 int nmain(int argc, char **argv)
 {
     (void)argc; (void)argv;
+    if (argc > 1) return 7;                      /* modo hijo */
     char buf[256];
     long d;
 
@@ -63,6 +64,19 @@ int nmain(int argc, char **argv)
     if (sys3(217, d, (long)buf, sizeof buf) != 0) { print("[ftest] getdents64 fin FALLO\n"); return 1; }
     sys3(3, d, 0, 0);
     print("[ftest] cwd OK\n");
+    {
+        long me = sys3(39, 0, 0, 0), pp = sys3(110, 0, 0, 0);
+        if (me <= 0 || pp < 0) { print("[ftest] getpid FALLO\n"); return 1; }
+        char *cv[3] = { "ftest", "child", 0 };
+        long id = sys3(500, (long)"ftest", (long)cv, 0);
+        if (id < 0) { print("[ftest] spawn hijo FALLO\n"); return 1; }
+        int st = -1;
+        long w = sys3(61, id, (long)&st, 0);
+        if (w != id) { print("[ftest] wait4 pid FALLO\n"); return 1; }
+        if (st != (7 << 8)) { print("[ftest] wait4 status FALLO\n"); return 1; }
+        if (sys3(61, -1, (long)&st, 1) != -10) { print("[ftest] ECHILD FALLO\n"); return 1; }
+        print("[ftest] wait4 OK\n");
+    }
     print("[ftest] todo OK\n");
     return 0;
 }

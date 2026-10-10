@@ -26,6 +26,82 @@ extern const uint8_t ucrash_start[], ucrash_end[];
 
 static volatile int fg;                    /* procesos de usuario vivos */
 
+/* ---- tabla de procesos: padre, estado y status de salida (para wait4) ---- */
+#define PT_MAX 64
+enum { PT_FREE, PT_RUN, PT_ZOMBIE };
+struct pent { int id, ppid, state, status; };
+static struct pent ptab[PT_MAX];
+
+static struct pent *pt_find(int id)
+{
+    for (int i = 0; i < PT_MAX; i++)
+        if (ptab[i].state && ptab[i].id == id) return &ptab[i];
+    return 0;
+}
+
+static int pt_add(int id, int ppid)
+{
+    for (int i = 0; i < PT_MAX; i++)
+        if (ptab[i].state == PT_FREE) {
+            ptab[i].id = id; ptab[i].ppid = ppid; ptab[i].state = PT_RUN; ptab[i].status = 0;
+            return 0;
+        }
+    return -1;
+}
+
+static void pt_exit(int id, int status)
+{
+    uint64_t f = irq_save();
+    for (int i = 0; i < PT_MAX; i++)                    /* hijos propios: huerfanos */
+        if (ptab[i].state && ptab[i].ppid == id) {
+            if (ptab[i].state == PT_ZOMBIE) ptab[i].state = PT_FREE;
+            else ptab[i].ppid = 0;
+        }
+    struct pent *e = pt_find(id);
+    if (e) {
+        if (e->ppid == 0) e->state = PT_FREE;           /* nadie lo va a esperar */
+        else { e->state = PT_ZOMBIE; e->status = status; }
+    }
+    irq_restore(f);
+}
+
+int user_ppid(void)
+{
+    uint64_t f = irq_save();
+    struct pent *e = pt_find(task_id());
+    int p = e ? e->ppid : 0;
+    irq_restore(f);
+    return p;
+}
+
+int user_wait(int pid, int *status, int nohang)
+{
+    int me = task_id();
+    for (;;) {
+        uint64_t f = irq_save();
+        int have = 0;
+        for (int i = 0; i < PT_MAX; i++) {
+            struct pent *e = &ptab[i];
+            if (!e->state || e->ppid != me) continue;
+            if (pid > 0 && e->id != pid) continue;
+            have = 1;
+            if (e->state == PT_ZOMBIE) {
+                int id = e->id;
+                if (status) *status = e->status;
+                e->state = PT_FREE;
+                irq_restore(f);
+                return id;
+            }
+        }
+        irq_restore(f);
+        if (!have) return -10;                          /* ECHILD */
+        if (nohang) return 0;
+        if (task_killed()) user_kill_self();
+        yield();
+        __asm__ volatile("sti; hlt; cli" : : : "memory");
+    }
+}
+
 static void zero_page(uint64_t phys)
 {
     volatile uint64_t *p = (volatile uint64_t *)P2V(phys);
@@ -170,6 +246,7 @@ static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint
         pr->mmap_next = USER_MMAP_BASE;
         fd_init_std(pr->fds);
         pr->cwd[0] = '/'; pr->cwd[1] = 0;
+        pr->exit_code = 11;                   /* si muere sin exit: SIGSEGV */
     }
     task_set_space(sp);                       /* a partir de aca CR3 = espacio del proceso */
     return 0;
@@ -180,6 +257,7 @@ void user_cleanup(void)
 {
     struct proc *pr = task_proc();
     if (pr) fd_close_all(pr->fds);        /* libera archivos abiertos en cualquier tipo de muerte */
+    pt_exit(task_id(), pr ? pr->exit_code : 11);
     uint64_t sp = task_get_space();
     task_set_space(vmm_kernel_space());
     if (sp != vmm_kernel_space()) vmm_destroy_space(sp);
@@ -193,6 +271,7 @@ void user_kill_self(void)
 {
     (void)irq_save();                     /* no se restaura: no vuelve */
     console_puts("\n[kernel] proceso terminado (Ctrl+C)\n");
+    task_proc()->exit_code = 2;           /* SIGINT */
     user_cleanup();
     task_exit();
 }
@@ -211,7 +290,7 @@ static void user_task(void *arg)
     kfree(l);
     if (rc && fg > 0) fg--;                   /* no llego a ser proceso */
     irq_restore(f);
-    if (rc) return;
+    if (rc) { pt_exit(task_id(), 127 << 8); return; }
 
     /* rsp0 ya lo dejo puesto schedule() al entrar a esta tarea */
     __asm__ volatile(
@@ -260,7 +339,10 @@ static int spawn(const char *name, int which, const struct uargs *args)
     l->args.argc = args ? args->argc : 0;
     for (int i = 0; i < USER_ARGBUF; i++) l->args.buf[i] = args ? args->buf[i] : 0;
 
+    uint64_t g = irq_save();
     int id = task_create(name, user_task, l);
+    if (id >= 0) pt_add(id, task_id());
+    irq_restore(g);
     if (id < 0) {
         f = irq_save();
         fg--;

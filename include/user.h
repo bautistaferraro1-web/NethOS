@@ -17,4 +17,7 @@ void user_kill_self(void);   /* termina la tarea actual como un exit forzado */
 struct uargs { int argc; char buf[USER_ARGBUF]; };
 int  user_spawn_args(const char *name, const struct uargs *args);   /* -1 si no existe */
 
+int  user_wait(int pid, int *status, int nohang);   /* pid hijo, 0 (WNOHANG) o -10 (ECHILD) */
+int  user_ppid(void);
+
 #endif
