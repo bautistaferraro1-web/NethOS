@@ -74,8 +74,25 @@ void console_status(const char *s)
     for (int i = 0; i < len; i++) VGA[W - len + i] = (0x1F << 8) | (uint8_t)s[i];
 }
 
+/* ---- salida serie COM1 (para copiar la consola desde la terminal del host) ---- */
+static inline void ser_outb(unsigned short p, unsigned char v) { __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(p)); }
+static inline unsigned char ser_inb(unsigned short p) { unsigned char v; __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(p)); return v; }
+static void ser_putc(char ch)
+{
+    static int ready;
+    if (!ready) {
+        ser_outb(0x3F9, 0x00); ser_outb(0x3FB, 0x80); ser_outb(0x3F8, 0x01); ser_outb(0x3F9, 0x00);
+        ser_outb(0x3FB, 0x03); ser_outb(0x3FA, 0xC7); ser_outb(0x3FC, 0x0B);
+        ready = 1;
+    }
+    if (ch == '\n') { while (!(ser_inb(0x3FD) & 0x20)) { } ser_outb(0x3F8, '\r'); }
+    while (!(ser_inb(0x3FD) & 0x20)) { }
+    ser_outb(0x3F8, (unsigned char)ch);
+}
+
 void console_putc(char c)
 {
+    ser_putc((char)c);
     uint64_t f = irq_save();
     putc_raw(c);
     irq_restore(f);

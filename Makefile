@@ -33,7 +33,7 @@ iso: build/nethel.elf
 > grub-mkrescue -o build/nethel.iso iso
 
 run: iso
-> qemu-system-x86_64 -cdrom build/nethel.iso -m 256M
+> qemu-system-x86_64 -cdrom build/nethel.iso -m 256M -serial stdio
 
 clean:
 > rm -rf build iso/boot/nethel.elf
