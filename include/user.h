@@ -1,5 +1,6 @@
 #ifndef NETHEL_USER_H
 #define NETHEL_USER_H
+#include <stdint.h>
 
 int  user_spawn(void);               /* programa en assembly pegado al kernel */
 int  user_spawn_crash(void);         /* programa que provoca un #PF en Ring 3 */
@@ -25,4 +26,6 @@ long user_clone_test(void);   /* temporal */
 struct regs;
 int  user_fork(const struct regs *r);   /* id del hijo o -1 */
 
+/* 0 ok (r apunta al programa nuevo); -1 falla sin tocar nada */
+int  user_exec(const uint8_t *img, uint64_t size, const struct uargs *a, struct regs *r);
 #endif

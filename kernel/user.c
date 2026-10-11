@@ -442,3 +442,56 @@ int user_fork(const struct regs *r)
     irq_restore(f);
     return id;
 }
+
+/* ---- execve ---- */
+static int map_stack(uint64_t sp, uint64_t *top_frame)
+{
+    for (int i = 0; i < USER_STACK_PAGES; i++) {
+        uint64_t f = pmm_alloc_page();
+        if (!f) return -1;
+        zero_page(f);
+        if (vmm_map_in(sp, USER_STACK + (uint64_t)i * 4096, f, VMM_USER | VMM_WRITE)) {
+            pmm_free_page(f);
+            return -1;
+        }
+        if (i == USER_STACK_PAGES - 1) *top_frame = f;
+    }
+    return 0;
+}
+
+int user_exec(const uint8_t *img, uint64_t size, const struct uargs *args, struct regs *r)
+{
+    struct elf_aux ai = { 0, 0, 0, 0 };
+    uint64_t entry = 0, top = 0;
+
+    uint64_t f = irq_save();
+    uint64_t ns = vmm_create_space();
+    if (!ns) { irq_restore(f); return -1; }
+
+    if (elf_load(img, size, ns, USER_CODE, USER_STACK, &entry, &ai) || map_stack(ns, &top)) {
+        vmm_destroy_space(ns);                  /* el proceso viejo sigue intacto */
+        irq_restore(f);
+        return -1;
+    }
+
+    uint64_t rsp = build_stack(top, args, entry, &ai);
+
+    struct proc *pr = task_proc();
+    pr->brk_start = pr->brk_cur = (ai.end + 0xFFFULL) & ~0xFFFULL;
+    pr->mmap_next = USER_MMAP_BASE;
+    pr->clear_tid = 0;
+    pr->fs_base   = 0;                          /* fds y cwd se heredan */
+
+    uint64_t old = task_get_space();
+    task_set_space(ns);
+    task_set_fs(0);
+    vmm_destroy_space(old);
+
+    r->r15 = r->r14 = r->r13 = r->r12 = r->r11 = r->r10 = r->r9 = r->r8 = 0;
+    r->rbp = r->rdi = r->rsi = r->rdx = r->rcx = r->rbx = r->rax = 0;
+    r->rip = entry;
+    r->rsp = rsp;
+    r->rflags = 0x202;
+    irq_restore(f);
+    return 0;
+}

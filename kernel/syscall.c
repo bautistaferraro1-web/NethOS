@@ -23,6 +23,7 @@
 #define SYS_GETDENTS64 217
 #define SYS_GETPID 39
 #define SYS_FORK 57
+#define SYS_EXECVE 59
 #define SYS_CLONE 56
 #define SYS_WAIT4 61
 #define SYS_GETPPID 110
@@ -43,6 +44,8 @@
 #define ENOENT 2
 #define EBADF  9
 #define E2BIG  7
+#define ENOEXEC 8
+#define EACCES 13
 #define EFAULT 14
 #define EINVAL 22
 #define ENOMEM 12
@@ -502,6 +505,47 @@ static uint64_t sys_wait4(uint64_t pid, uint64_t ust, uint64_t opt, uint64_t ru)
     return (uint64_t)(int64_t)r;
 }
 
+/* execve(path, argv, envp): envp se ignora por ahora */
+static uint64_t sys_execve(uint64_t upath, uint64_t uargv, uint64_t uenvp, struct regs *r)
+{
+    (void)uenvp;
+    char path[PATH_MAX_K];
+    struct uargs a;
+    int off = 0;
+    a.argc = 0;
+
+    int pr = user_path(path, upath);
+    if (pr == -1) return ERR(EFAULT);
+    if (pr == -2) return ERR(ENAMETOOLONG);
+
+    while (uargv) {
+        if (!user_range_ok(uargv + 8ULL * a.argc, 8)) return ERR(EFAULT);
+        uint64_t p = *(const uint64_t *)(uargv + 8ULL * a.argc);
+        if (!p) break;
+        if (a.argc >= USER_MAXARGS) return ERR(E2BIG);
+        int n = copy_str(a.buf + off, USER_ARGBUF - off, p);
+        if (n == -1) return ERR(EFAULT);
+        if (n < 0)   return ERR(E2BIG);
+        off += n + 1;
+        a.argc++;
+    }
+    if (a.argc == 0) {
+        int n = 0;
+        while (path[n]) { a.buf[n] = path[n]; n++; }
+        a.buf[n] = 0;
+        a.argc = 1;
+    }
+
+    const uint8_t *img = 0;
+    uint64_t size = 0;
+    int lk = initramfs_lookup(path, &img, &size);
+    if (lk == -1) return ERR(ENOENT);
+    if (lk == -2) return ERR(EACCES);
+
+    if (user_exec(img, size, &a, r)) return ERR(ENOEXEC);
+    return 0;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -527,6 +571,7 @@ void syscall_dispatch(struct regs *r)
         r->rax = id < 0 ? ERR(ENOMEM) : (uint64_t)id;
         break;
     }
+    case SYS_EXECVE: r->rax = sys_execve(r->rdi, r->rsi, r->rdx, r); break;
     case SYS_GETPID:  r->rax = (uint64_t)task_id(); break;
     case SYS_GETPPID: r->rax = (uint64_t)user_ppid(); break;
     case SYS_WAIT4:   r->rax = sys_wait4(r->rdi, r->rsi, r->rdx, r->r10); break;

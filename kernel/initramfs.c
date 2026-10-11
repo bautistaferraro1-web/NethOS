@@ -156,3 +156,16 @@ int initramfs_isdir(const char *path)
     file_put(f);
     return d;
 }
+
+/* 0 ok; -1 no existe; -2 no es archivo regular */
+int initramfs_lookup(const char *path, const uint8_t **data, uint64_t *size)
+{
+    struct file *f = initramfs_open(path);
+    if (!f) return -1;
+    struct ent *e = f->priv;
+    int r = 0;
+    if ((e->mode & 0170000) == 0040000) r = -2;
+    else { *data = e->data; *size = e->size; }
+    file_put(f);
+    return r;
+}

@@ -7,7 +7,7 @@ CFLAGS  = -std=gnu11 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
           -fno-tree-loop-distribute-patterns -Wall -Wextra -Iinclude $(EXTRA)
 LDFLAGS = -n -nostdlib -z max-page-size=0x1000 -T arch/x86_64/boot/linker.ld
 
-OBJS = build/boot.o build/isr.o build/main.o build/console.o build/pmm.o build/idt.o build/heap.o build/irq.o build/timer.o build/keyboard.o build/vmm.o build/switch.o build/sched.o build/gdt.o build/user.o build/syscall.o build/file.o build/initramfs.o build/initramfs_cpio.o build/ftest_elf.o build/uprog.o build/elf.o build/hello_elf.o build/echo_elf.o build/progs.o build/nsh_elf.o build/loop_elf.o build/fpu.o build/sse_elf.o build/abi_elf.o build/memt_elf.o build/iotest_elf.o build/sctest_elf.o build/gtest_elf.o
+OBJS = build/boot.o build/isr.o build/main.o build/console.o build/pmm.o build/idt.o build/heap.o build/irq.o build/timer.o build/keyboard.o build/vmm.o build/switch.o build/sched.o build/gdt.o build/user.o build/syscall.o build/file.o build/initramfs.o build/initramfs_cpio.o build/ftest_elf.o build/uprog.o build/elf.o build/hello_elf.o build/echo_elf.o build/progs.o build/nsh_elf.o build/loop_elf.o build/fpu.o build/sse_elf.o build/abi_elf.o build/memt_elf.o build/iotest_elf.o build/sctest_elf.o build/gtest_elf.o build/exectest_elf.o
 
 all: build/nethel.elf
 
@@ -157,3 +157,13 @@ build/ftest.elf: build/ftest.o user/user.ld
 
 build/ftest_elf.o: build/ftest.elf
 >cd build && ld -r -b binary -z noexecstack -o ftest_elf.o ftest.elf
+
+build/exectest.o: user/exectest.c user/nlib.h Makefile
+> mkdir -p build
+> gcc -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-stack-protector -fno-tree-loop-distribute-patterns -Wall -Wextra -c user/exectest.c -o build/exectest.o
+
+build/exectest.elf: build/exectest.o user/user.ld
+> ld -nostdlib -z max-page-size=0x1000 -T user/user.ld -o build/exectest.elf build/exectest.o
+
+build/exectest_elf.o: build/exectest.elf
+> cd build && ld -r -b binary -z noexecstack -o exectest_elf.o exectest.elf
