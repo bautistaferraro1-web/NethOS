@@ -709,6 +709,22 @@ static uint64_t sys_access(uint64_t upath, uint64_t mode)
     return 0;
 }
 
+static uint64_t sys_pipe2(uint64_t ufds, uint64_t flags)
+{
+    (void)flags;
+    if (!user_range_ok(ufds, 8)) return ERR(EFAULT);
+    struct file *rd, *wr;
+    if (pipe_create(&rd, &wr)) return ERR(ENOMEM);
+    struct file **fds = task_proc()->fds;
+    int a = fd_install(fds, rd);
+    if (a < 0) { file_put(rd); file_put(wr); return ERR(EMFILE); }
+    int b = fd_install(fds, wr);
+    if (b < 0) { fd_close(fds, (uint64_t)a); file_put(wr); return ERR(EMFILE); }
+    ((int *)ufds)[0] = a;
+    ((int *)ufds)[1] = b;
+    return 0;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -718,6 +734,10 @@ void syscall_dispatch(struct regs *r)
     case SYS_OPEN:   r->rax = sys_open(r->rdi, r->rsi); break;
     case SYS_OPENAT: r->rax = sys_openat(r->rdi, r->rsi, r->rdx); break;
     case SYS_STAT:   r->rax = sys_stat(r->rdi, r->rsi); break;
+    case 6:   r->rax = sys_stat(r->rdi, r->rsi); break;   /* lstat: sin symlinks es igual a stat */
+    case 22:  r->rax = sys_pipe2(r->rdi, 0); break;
+    case 293: r->rax = sys_pipe2(r->rdi, r->rsi); break;
+    case 157: r->rax = 0; break;                          /* prctl: provisorio, acepta todo */
     case SYS_LSEEK:  r->rax = sys_lseek(r->rdi, r->rsi, r->rdx); break;
     case SYS_GETCWD: r->rax = sys_getcwd(r->rdi, r->rsi); break;
     case SYS_CHDIR:  r->rax = sys_chdir(r->rdi); break;

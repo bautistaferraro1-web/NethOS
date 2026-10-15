@@ -93,7 +93,7 @@ static int64_t con_stat(struct file *f, void *st)
     return 0;
 }
 
-static const struct file_ops con_ops = { con_read, con_write, con_ioctl, con_stat, 0, 0 };
+static const struct file_ops con_ops = { con_read, con_write, con_ioctl, con_stat, 0, 0, 0 };
 struct file console_file = { &con_ops, 1, 0, 0 };
 
 void console_cooked_release(void) { if (con_echo && con_owner == task_id()) con_echo = 0; }
@@ -103,7 +103,7 @@ struct file *file_get(struct file *f) { if (f) f->refcount++; return f; }
 void file_put(struct file *f)
 {
     if (!f) return;
-    if (--f->refcount <= 0 && f != &console_file) { /* kfree(f) cuando haya archivos dinamicos */ }
+    if (--f->refcount <= 0 && f != &console_file && f->ops->close) f->ops->close(f);
 }
 
 void fd_init_std(struct file **fds)

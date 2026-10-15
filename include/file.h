@@ -22,6 +22,7 @@ struct file_ops {
     int64_t (*stat)(struct file *f, void *st144);   /* st ya en cero */
     int64_t (*lseek)(struct file *f, int64_t off, int whence);
     int64_t (*getdents)(struct file *f, void *buf, uint64_t n);
+    int64_t (*close)(struct file *f);   /* solo archivos dinamicos: libera todo, incluido f */
 };
 
 struct file {
@@ -34,6 +35,7 @@ struct file {
 extern struct file console_file;
 void console_cooked_release(void);   /* apaga el eco si lo encendio la tarea actual */
 
+int          pipe_create(struct file **rd, struct file **wr);
 struct file *file_get(struct file *f);
 void         file_put(struct file *f);
 

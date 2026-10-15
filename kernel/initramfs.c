@@ -126,7 +126,7 @@ static int64_t rf_getdents(struct file *f, void *buf, uint64_t n)
     return (int64_t)used;
 }
 
-static const struct file_ops rf_ops = { rf_read, 0, 0, rf_stat, rf_lseek, rf_getdents };
+static const struct file_ops rf_ops = { rf_read, 0, 0, rf_stat, rf_lseek, rf_getdents, 0 };
 
 struct file *initramfs_open(const char *path)
 {
