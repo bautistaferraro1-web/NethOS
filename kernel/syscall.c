@@ -499,7 +499,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t buf, uint64_t count)
 static uint64_t sys_wait4(uint64_t pid, uint64_t ust, uint64_t opt, uint64_t ru)
 {
     (void)ru;
-    if (opt & ~1ULL) return ERR(EINVAL);                /* solo WNOHANG */
+    if (opt & ~(1ULL | 2ULL | 8ULL)) return ERR(EINVAL);   /* WNOHANG; WUNTRACED y WCONTINUED se ignoran (aun no hay stop) */
     if (ust && !user_range_ok(ust, 4)) return ERR(EFAULT);
     int st = 0;
     int r = user_wait((int)pid, &st, (int)(opt & 1));
@@ -798,7 +798,7 @@ void syscall_dispatch(struct regs *r)
         for (;;) __asm__ volatile("hlt");
     default:
         switch (r->rax) {
-        case 273: case 334: case 302: case 318: case 267: case 262: break;   /* esperadas */
+        case 40: case 273: case 334: case 302: case 318: case 267: case 262: break;   /* esperadas */
         default: console_puts("[kernel] syscall sin implementar: "); console_dec(r->rax); console_putc('\n');
         }
         r->rax = ERR(38);                  /* ENOSYS */
