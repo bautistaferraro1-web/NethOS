@@ -258,6 +258,7 @@ void user_cleanup(void)
 {
     struct proc *pr = task_proc();
     if (pr) fd_close_all(pr->fds);        /* libera archivos abiertos en cualquier tipo de muerte */
+    console_cooked_release();
     pt_exit(task_id(), pr ? pr->exit_code : 11);
     uint64_t sp = task_get_space();
     task_set_space(vmm_kernel_space());

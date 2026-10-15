@@ -115,6 +115,8 @@ static uint64_t sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg)
     if (!f) return ERR(EBADF);
     if (!f->ops->ioctl) return ERR(ENOTTY);
     if (req == TCGETS && !user_range_ok(arg, KTERMIOS_SIZE)) return ERR(EFAULT);
+    if (req == 0x802C542A && !user_range_ok(arg, 44)) return ERR(EFAULT);
+    if (req == 0x540F && !user_range_ok(arg, 4)) return ERR(EFAULT);
     return (uint64_t)f->ops->ioctl(f, req, arg);
 }
 
@@ -546,6 +548,143 @@ static uint64_t sys_execve(uint64_t upath, uint64_t uargv, uint64_t uenvp, struc
     return 0;
 }
 
+static int zero_user(uint64_t p, uint64_t n)
+{
+    if (!p) return 0;
+    if (!user_range_ok(p, n)) return -1;
+    for (uint64_t i = 0; i < n; i++) ((uint8_t *)p)[i] = 0;
+    return 0;
+}
+
+/* Todavia no hay entrega de senales: se acepta todo y no se guarda nada */
+static uint64_t sys_sigaction(uint64_t sig, uint64_t act, uint64_t old)
+{
+    (void)sig; (void)act;
+    if (zero_user(old, 32)) return ERR(EFAULT);
+    return 0;
+}
+
+static uint64_t sys_sigprocmask(uint64_t how, uint64_t set, uint64_t old)
+{
+    (void)how; (void)set;
+    if (zero_user(old, 8)) return ERR(EFAULT);
+    return 0;
+}
+
+static uint64_t sys_getres(uint64_t a, uint64_t b, uint64_t c)
+{
+    if (zero_user(a, 4) || zero_user(b, 4) || zero_user(c, 4)) return ERR(EFAULT);
+    return 0;
+}
+
+static uint64_t sys_gettimeofday(uint64_t tv, uint64_t tz)
+{
+    (void)tz;
+    if (!tv) return 0;
+    if (!user_range_ok(tv, 16)) return ERR(EFAULT);
+    uint64_t t = timer_ticks();
+    ((uint64_t *)tv)[0] = t / 100;
+    ((uint64_t *)tv)[1] = (t % 100) * 10000ULL;
+    return 0;
+}
+
+static void put_field(char *dst, const char *s)
+{
+    int i = 0;
+    while (s[i] && i < 64) { dst[i] = s[i]; i++; }
+}
+
+static uint64_t sys_uname(uint64_t u)
+{
+    if (zero_user(u, 390) || !u) return ERR(EFAULT);
+    char *b = (char *)u;
+    put_field(b + 0,   "Linux");
+    put_field(b + 65,  "nethel");
+    put_field(b + 130, "6.1.0");
+    put_field(b + 195, "#1 Nethel");
+    put_field(b + 260, "x86_64");
+    return 0;
+}
+
+#define F_DUPFD 0
+#define F_GETFD 1
+#define F_SETFD 2
+#define F_GETFL 3
+#define F_SETFL 4
+#define F_DUPFD_CLOEXEC 1030
+
+static uint64_t sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg)
+{
+    struct file *f = cur_fd(fd);
+    if (!f) return ERR(EBADF);
+    switch (cmd) {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC: {
+        struct file **fds = task_proc()->fds;
+        for (uint64_t i = arg; i < NFD; i++) {
+            if (!fds[i]) { fds[i] = file_get(f); return i; }
+        }
+        return ERR(EMFILE);
+    }
+    case F_GETFD: case F_SETFD: case F_GETFL: case F_SETFL:
+        return 0;
+    default:
+        return ERR(EINVAL);
+    }
+}
+
+static uint64_t sys_dup(uint64_t fd)
+{
+    struct file *f = cur_fd(fd);
+    if (!f) return ERR(EBADF);
+    int n = fd_install(task_proc()->fds, file_get(f));
+    if (n < 0) { file_put(f); return ERR(EMFILE); }
+    return (uint64_t)n;
+}
+
+static uint64_t sys_dup2(uint64_t oldfd, uint64_t newfd)
+{
+    struct file *f = cur_fd(oldfd);
+    if (!f || newfd >= NFD) return ERR(EBADF);
+    if (oldfd == newfd) return newfd;
+    struct file **fds = task_proc()->fds;
+    if (fds[newfd]) fd_close(fds, newfd);
+    fds[newfd] = file_get(f);
+    return newfd;
+}
+
+/* No hay symlinks en el initramfs */
+static uint64_t sys_readlink(uint64_t upath, uint64_t buf, uint64_t n)
+{
+    (void)upath; (void)buf; (void)n;
+    return ERR(EINVAL);
+}
+
+#define AT_EMPTY_PATH_ 0x1000
+/* dirfd se ignora salvo con AT_EMPTY_PATH (= fstat) */
+static uint64_t sys_newfstatat(uint64_t dirfd, uint64_t upath, uint64_t st, uint64_t flags)
+{
+    if (!user_range_ok(st, 144)) return ERR(EFAULT);
+    if (user_range_ok(upath, 1) && ((const char *)upath)[0] == 0) {
+        if (flags & AT_EMPTY_PATH_) return sys_fstat(dirfd, st);
+        return ERR(ENOENT);
+    }
+    return sys_stat(upath, st);
+}
+
+static uint64_t sys_access(uint64_t upath, uint64_t mode)
+{
+    (void)mode;
+    char p[PATH_MAX_K];
+    int r = user_path(p, upath);
+    if (r == -1) return ERR(EFAULT);
+    if (r == -2) return ERR(ENAMETOOLONG);
+    struct file *f = initramfs_open(p);
+    if (!f) return ERR(ENOENT);
+    file_put(f);
+    return 0;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -572,6 +711,23 @@ void syscall_dispatch(struct regs *r)
         break;
     }
     case SYS_EXECVE: r->rax = sys_execve(r->rdi, r->rsi, r->rdx, r); break;
+    case 13:  r->rax = sys_sigaction(r->rdi, r->rsi, r->rdx); break;
+    case 14:  r->rax = sys_sigprocmask(r->rdi, r->rsi, r->rdx); break;
+    case 118: r->rax = sys_getres(r->rdi, r->rsi, r->rdx); break;
+    case 120: r->rax = sys_getres(r->rdi, r->rsi, r->rdx); break;
+    case 96:  r->rax = sys_gettimeofday(r->rdi, r->rsi); break;
+    case 63:  r->rax = sys_uname(r->rdi); break;
+    case 111: r->rax = (uint64_t)task_id(); break;
+    case 72:  r->rax = sys_fcntl(r->rdi, r->rsi, r->rdx); break;
+    case 32:  r->rax = sys_dup(r->rdi); break;
+    case 33:  r->rax = sys_dup2(r->rdi, r->rsi); break;
+    case 89:  r->rax = sys_readlink(r->rdi, r->rsi, r->rdx); break;
+    case 262: r->rax = sys_newfstatat(r->rdi, r->rsi, r->rdx, r->r10); break;
+    case 102: case 104: case 107: case 108: r->rax = 0; break;
+    case 21:  r->rax = sys_access(r->rdi, r->rsi); break;
+    case 269: r->rax = sys_access(r->rsi, r->rdx); break;
+    case 109: r->rax = 0; break;
+    case 121: case 112: r->rax = (uint64_t)task_id(); break;
     case SYS_GETPID:  r->rax = (uint64_t)task_id(); break;
     case SYS_GETPPID: r->rax = (uint64_t)user_ppid(); break;
     case SYS_WAIT4:   r->rax = sys_wait4(r->rdi, r->rsi, r->rdx, r->r10); break;

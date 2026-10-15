@@ -1,2 +1,4 @@
 build/
 iso/boot/nethel.elf
+initrd/bin/bash
+initrd/bin/bash

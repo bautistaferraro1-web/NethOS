@@ -32,6 +32,7 @@ struct file {
 };
 
 extern struct file console_file;
+void console_cooked_release(void);   /* apaga el eco si lo encendio la tarea actual */
 
 struct file *file_get(struct file *f);
 void         file_put(struct file *f);
