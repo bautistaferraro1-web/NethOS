@@ -507,7 +507,15 @@ static uint64_t sys_wait4(uint64_t pid, uint64_t ust, uint64_t opt, uint64_t ru)
     return (uint64_t)(int64_t)r;
 }
 
-/* execve(path, argv, envp): envp se ignora por ahora */
+/* Entorno por defecto si el usuario no pasa envp */
+static void env_default(struct uenv *e)
+{
+    static const char d[] = "PATH=/bin\0HOME=/";
+    for (uint64_t i = 0; i < sizeof d; i++) e->buf[i] = d[i];
+    e->envc = 2;
+}
+
+/* execve(path, argv, envp) */
 static uint64_t sys_execve(uint64_t upath, uint64_t uargv, uint64_t uenvp, struct regs *r)
 {
     (void)uenvp;
@@ -538,13 +546,29 @@ static uint64_t sys_execve(uint64_t upath, uint64_t uargv, uint64_t uenvp, struc
         a.argc = 1;
     }
 
+    struct uenv ev;
+    ev.envc = 0;
+    int eoff = 0;
+    while (uenvp) {
+        if (!user_range_ok(uenvp + 8ULL * ev.envc, 8)) return ERR(EFAULT);
+        uint64_t ep = *(const uint64_t *)(uenvp + 8ULL * ev.envc);
+        if (!ep) break;
+        if (ev.envc >= USER_MAXENV) return ERR(E2BIG);
+        int en = copy_str(ev.buf + eoff, USER_ENVBUF - eoff, ep);
+        if (en == -1) return ERR(EFAULT);
+        if (en < 0)   return ERR(E2BIG);
+        eoff += en + 1;
+        ev.envc++;
+    }
+    if (ev.envc == 0) env_default(&ev);
+
     const uint8_t *img = 0;
     uint64_t size = 0;
     int lk = initramfs_lookup(path, &img, &size);
     if (lk == -1) return ERR(ENOENT);
     if (lk == -2) return ERR(EACCES);
 
-    if (user_exec(img, size, &a, r)) return ERR(ENOEXEC);
+    if (user_exec(img, size, &a, &ev, r)) return ERR(ENOEXEC);
     return 0;
 }
 

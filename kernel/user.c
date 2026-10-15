@@ -163,19 +163,25 @@ static void fill_random(uint8_t *dst)
 /* Arma el stack inicial System V en 'frame', la pagina fisica de ARRIBA del stack
    (mapeada en USER_STACK_TOP - 4096). Devuelve el rsp inicial, alineado a 16:
      rsp -> argc | argv[0..argc-1] | NULL | envp: NULL | auxv (pares) ... | random(16) | strings */
-static uint64_t build_stack(uint64_t frame, const struct uargs *a, uint64_t entry, const struct elf_aux *ai)
+static uint64_t build_stack(uint64_t frame, const struct uargs *a, const struct uenv *env, uint64_t entry, const struct elf_aux *ai)
 {
     const uint64_t page = USER_STACK_TOP - 4096;
     uint64_t used = 0;
     for (int i = 0; i < a->argc; i++) { while (a->buf[used]) used++; used++; }
+    uint64_t aused = used;
+    int ec = env ? env->envc : 0;
+    uint64_t eu = 0;
+    for (int i = 0; i < ec; i++) { while (env->buf[eu]) eu++; eu++; }
+    used += eu;
 
     uint64_t strva = (USER_STACK_TOP - used) & ~0xFULL;
     uint64_t rndva = strva - 16;
-    uint64_t nw    = 1 + (uint64_t)a->argc + 1 + 1 + NAUX * 2;
+    uint64_t nw    = 1 + (uint64_t)a->argc + 1 + (uint64_t)ec + 1 + NAUX * 2;
     uint64_t sp    = (rndva - nw * 8) & ~0xFULL;
 
     volatile uint8_t *pg = (volatile uint8_t *)P2V(frame);
-    for (uint64_t i = 0; i < used; i++) pg[strva - page + i] = (uint8_t)a->buf[i];
+    for (uint64_t i = 0; i < aused; i++) pg[strva - page + i] = (uint8_t)a->buf[i];
+    for (uint64_t i = 0; i < eu; i++) pg[strva - page + aused + i] = (uint8_t)env->buf[i];
     uint8_t rnd[16];
     fill_random(rnd);
     for (int i = 0; i < 16; i++) pg[rndva - page + i] = rnd[i];
@@ -189,7 +195,15 @@ static uint64_t build_stack(uint64_t frame, const struct uargs *a, uint64_t entr
         off++;
     }
     w[k++] = 0;                              /* argv[argc] = NULL */
-    w[k++] = 0;                              /* envp[0]    = NULL */
+    {
+        uint64_t eo = 0;
+        for (int i = 0; i < ec; i++) {
+            w[k++] = strva + aused + eo;
+            while (env->buf[eo]) eo++;
+            eo++;
+        }
+    }
+    w[k++] = 0;                              /* envp[ec] = NULL */
 #define AUX(t, v) do { w[k++] = (t); w[k++] = (v); } while (0)
     AUX(AT_PAGESZ, 4096);
     AUX(AT_CLKTCK, 100);
@@ -239,7 +253,7 @@ static int user_setup(int which, const struct uargs *args, uint64_t *entry, uint
         return -1;
     }
 
-    *rsp = build_stack(top_frame, args, *entry, &ai);
+    *rsp = build_stack(top_frame, args, 0, *entry, &ai);
     {
         struct proc *pr = task_proc();
         uint64_t end = which >= PROG_TABLE ? ai.end : USER_CODE + 4096;
@@ -460,7 +474,7 @@ static int map_stack(uint64_t sp, uint64_t *top_frame)
     return 0;
 }
 
-int user_exec(const uint8_t *img, uint64_t size, const struct uargs *args, struct regs *r)
+int user_exec(const uint8_t *img, uint64_t size, const struct uargs *args, const struct uenv *env, struct regs *r)
 {
     struct elf_aux ai = { 0, 0, 0, 0 };
     uint64_t entry = 0, top = 0;
@@ -475,7 +489,7 @@ int user_exec(const uint8_t *img, uint64_t size, const struct uargs *args, struc
         return -1;
     }
 
-    uint64_t rsp = build_stack(top, args, entry, &ai);
+    uint64_t rsp = build_stack(top, args, env, entry, &ai);
 
     struct proc *pr = task_proc();
     pr->brk_start = pr->brk_cur = (ai.end + 0xFFFULL) & ~0xFFFULL;
