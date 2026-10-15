@@ -126,6 +126,14 @@ static int64_t rf_getdents(struct file *f, void *buf, uint64_t n)
     return (int64_t)used;
 }
 
+static int is_lnk_ent(const struct ent *e) { return (e->mode & 0170000) == 0120000; }
+
+static struct ent *find_ent(const char *path)
+{
+    for (int i = 0; i < nents; i++) if (streq(ents[i].name, path)) return &ents[i];
+    return 0;
+}
+
 static const struct file_ops rf_ops = { rf_read, 0, 0, rf_stat, rf_lseek, rf_getdents, 0 };
 
 struct file *initramfs_open(const char *path)
@@ -136,8 +144,28 @@ struct file *initramfs_open(const char *path)
         else if (path[0] == '.' && path[1] == '/') path += 2;
         else break;
     }
-    struct ent *e = 0;
-    for (int i = 0; i < nents; i++) if (streq(ents[i].name, path)) { e = &ents[i]; break; }
+    struct ent *e = find_ent(path);
+    for (int depth = 0; e && is_lnk_ent(e); depth++) {      /* seguir symlinks (max 8) */
+        if (depth >= 8 || e->size == 0 || e->size >= 128) return 0;
+        char tgt[128], full[256];
+        for (uint64_t i = 0; i < e->size; i++) tgt[i] = (char)e->data[i];
+        tgt[e->size] = 0;
+        if (tgt[0] == '/') {
+            const char *t = tgt;
+            while (*t == '/') t++;
+            int n = 0;
+            while (t[n]) { full[n] = t[n]; n++; }
+            full[n] = 0;
+        } else {
+            int dl = 0, last = -1;
+            while (e->name[dl]) { if (e->name[dl] == '/') last = dl; dl++; }
+            int n = 0;
+            for (int i = 0; i <= last; i++) full[n++] = e->name[i];
+            for (int i = 0; tgt[i]; i++) full[n++] = tgt[i];
+            full[n] = 0;
+        }
+        e = find_ent(full);
+    }
     if (!e) return 0;
     for (int i = 0; i < POOL_SZ; i++) {
         if (pool[i].refcount <= 0) {

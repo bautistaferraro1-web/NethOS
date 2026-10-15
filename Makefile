@@ -141,7 +141,7 @@ build/initramfs.o: kernel/initramfs.c include/initramfs.h include/file.h
 >mkdir -p build
 >gcc -std=gnu11 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -fno-tree-loop-distribute-patterns -Wall -Wextra -Iinclude -c kernel/initramfs.c -o build/initramfs.o
 
-build/initramfs.cpio: $(shell find initrd -type f) Makefile
+build/initramfs.cpio: $(shell find initrd \( -type f -o -type l \)) Makefile
 >mkdir -p build
 >cd initrd && find . -mindepth 1 | cpio -o -H newc --quiet > ../build/initramfs.cpio
 
