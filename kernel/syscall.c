@@ -7,6 +7,7 @@
 #include "proc.h"
 #include "file.h"
 #include "initramfs.h"
+#include "tmpfs.h"
 #include "pmm.h"
 #include "mem.h"
 #include "timer.h"
@@ -417,14 +418,32 @@ static int user_path(char *out, uint64_t src)
     return 0;
 }
 
+/* tmpfs primero, despues initramfs */
+static struct file *open_any(const char *p)
+{
+    int e = 0;
+    struct file *f = tmpfs_open(p, 0, &e);
+    return f ? f : initramfs_open(p);
+}
+
 static uint64_t do_open(uint64_t upath, uint64_t flags)
 {
     char p[PATH_MAX_K];
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
-    if (flags & 3) return ERR(EROFS);                /* solo lectura por ahora */
-    struct file *f = initramfs_open(p);
+    int wr = (flags & 3) || (flags & 0100) || (flags & 01000);
+    struct file *f;
+    if (!wr) f = open_any(p);
+    else {
+        if (!tmpfs_exists(p)) {
+            struct file *ro = initramfs_open(p);
+            if (ro) { file_put(ro); return ERR(EROFS); }   /* el initramfs es solo lectura */
+        }
+        int err = 0;
+        f = tmpfs_open(p, (int)flags, &err);
+        if (!f) return ERR(err);
+    }
     if (!f) return ERR(ENOENT);
     int fd = fd_install(task_proc()->fds, f);
     if (fd < 0) { file_put(f); return ERR(EMFILE); }
@@ -442,7 +461,7 @@ static uint64_t sys_stat(uint64_t upath, uint64_t st)
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
     if (!user_range_ok(st, 144)) return ERR(EFAULT);
-    struct file *f = initramfs_open(p);
+    struct file *f = open_any(p);
     if (!f) return ERR(ENOENT);
     for (int i = 0; i < 144; i++) ((uint8_t *)st)[i] = 0;
     uint64_t rv = (uint64_t)f->ops->stat(f, (void *)st);
@@ -725,6 +744,21 @@ static uint64_t sys_pipe2(uint64_t ufds, uint64_t flags)
     return 0;
 }
 
+static uint64_t sys_unlink(uint64_t upath)
+{
+    char p[PATH_MAX_K];
+    int r = user_path(p, upath);
+    if (r == -1) return ERR(EFAULT);
+    if (r == -2) return ERR(ENAMETOOLONG);
+    int rc = tmpfs_unlink(p);
+    if (rc == -2) {
+        struct file *f = initramfs_open(p);
+        if (f) { file_put(f); return ERR(EROFS); }
+        return ERR(ENOENT);
+    }
+    return rc < 0 ? ERR(-rc) : 0;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -772,6 +806,8 @@ void syscall_dispatch(struct regs *r)
     case 269: r->rax = sys_access(r->rsi, r->rdx); break;
     case 109: r->rax = 0; break;
     case 121: case 112: r->rax = (uint64_t)task_id(); break;
+    case 87:  r->rax = sys_unlink(r->rdi); break;
+    case 263: r->rax = sys_unlink(r->rsi); break;   /* unlinkat: dirfd ignorado */
     case SYS_GETPID:  r->rax = (uint64_t)task_id(); break;
     case SYS_GETPPID: r->rax = (uint64_t)user_ppid(); break;
     case SYS_WAIT4:   r->rax = sys_wait4(r->rdi, r->rsi, r->rdx, r->r10); break;
