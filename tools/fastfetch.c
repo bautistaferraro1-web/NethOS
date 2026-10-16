@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/sysinfo.h>
 #include <sys/utsname.h>
 
 static void cpu_name(char *out)
@@ -25,7 +26,7 @@ int main(void)
         " |  \\| | | |____	",
         " | |\\  | | |____|	",
         " | | \\ | | |____	",
-	" |_|  \_| |______| 	",
+	" |_|  \\_ |______| 	",
         "         ",
         "         ",
     };
@@ -50,7 +51,14 @@ int main(void)
     snprintf(shline, sizeof shline, "Shell:  %s", sh ? sh : "bash");
     snprintf(cpuline, sizeof cpuline, "CPU:    %s", c);
 
-    const char *info[] = { hostline, "-----------", osline, kline, upline, shline, cpuline };
-    for (int i = 0; i < 7; i++) printf("%s %s\n", logo[i], info[i]);
+    char memline[64];
+    struct sysinfo si;
+    if (sysinfo(&si) == 0 && si.totalram) {
+        unsigned long tot = ((unsigned long)si.totalram * si.mem_unit) >> 20;
+        unsigned long fre = ((unsigned long)si.freeram * si.mem_unit) >> 20;
+        snprintf(memline, sizeof memline, "Memory: %lu MiB / %lu MiB", tot - fre, tot);
+    } else snprintf(memline, sizeof memline, "Memory: desconocida");
+    const char *info[] = { hostline, "-----------", osline, kline, upline, shline, cpuline, memline };
+    for (int i = 0; i < 8; i++) printf("%-17s %s\n", logo[i], info[i]);
     return 0;
 }

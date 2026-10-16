@@ -759,6 +759,20 @@ static uint64_t sys_unlink(uint64_t upath)
     return rc < 0 ? ERR(-rc) : 0;
 }
 
+/* sysinfo: struct de 112 bytes de x86_64. mem_unit en el offset 104 */
+static uint64_t sys_sysinfo(uint64_t ui)
+{
+    if (!user_range_ok(ui, 112)) return ERR(EFAULT);
+    uint8_t *b = (uint8_t *)ui;
+    for (int i = 0; i < 112; i++) b[i] = 0;
+    *(int64_t  *)(b + 0)   = (int64_t)(timer_ticks() / 100);   /* uptime */
+    *(uint64_t *)(b + 32)  = pmm_total_pages();                /* totalram */
+    *(uint64_t *)(b + 40)  = pmm_free_pages();                 /* freeram  */
+    *(uint16_t *)(b + 80)  = 1;                                /* procs */
+    *(uint32_t *)(b + 104) = 4096;                             /* mem_unit */
+    return 0;
+}
+
 void syscall_dispatch(struct regs *r)
 {
     switch (r->rax) {
@@ -808,6 +822,7 @@ void syscall_dispatch(struct regs *r)
     case 121: case 112: r->rax = (uint64_t)task_id(); break;
     case 87:  r->rax = sys_unlink(r->rdi); break;
     case 263: r->rax = sys_unlink(r->rsi); break;   /* unlinkat: dirfd ignorado */
+    case 99:  r->rax = sys_sysinfo(r->rdi); break;
     case SYS_GETPID:  r->rax = (uint64_t)task_id(); break;
     case SYS_GETPPID: r->rax = (uint64_t)user_ppid(); break;
     case SYS_WAIT4:   r->rax = sys_wait4(r->rdi, r->rsi, r->rdx, r->r10); break;
