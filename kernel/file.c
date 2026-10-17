@@ -17,7 +17,7 @@ static int con_wait_key(void)
 {
     int c;
     while ((c = keyboard_getc()) < 0) {
-        if (task_killed()) user_kill_self();
+        if (task_sigpending()) return -4; /* EINTR */
         __asm__ volatile("sti; hlt; cli" : : : "memory");
     }
     return c;

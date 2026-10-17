@@ -4,6 +4,7 @@
 #include "console.h"
 #include "fpu.h"
 #include "proc.h"
+#include "sig.h"
 #ifndef HOST_TEST
 #include "gdt.h"
 #include "vmm.h"
@@ -22,7 +23,6 @@ struct task {
     uint8_t *stack;                     /* 0 para la tarea de arranque */
     uint64_t ticks;
     uint64_t cr3;                       /* espacio de direcciones */
-    volatile int killed;                /* Ctrl+C pendiente */
     int is_user;                        /* proceso de usuario */
     struct fpu_state fpu;               /* estado x87/SSE (fxsave) */
     struct proc proc;                   /* fs_base, brk, mmap... */
@@ -63,7 +63,6 @@ void sched_init(void)
 #ifndef HOST_TEST
     t->cr3 = vmm_kernel_space();
 #endif
-    t->killed = 0;
     t->is_user = 0;
     fpu_init_state(&t->fpu);
     proc_clear(&t->proc);
@@ -143,7 +142,6 @@ int task_create(const char *name, task_fn fn, void *arg)
     t->cr3 = vmm_kernel_space();
 #endif
 
-    t->killed = 0;
     t->is_user = 0;
     fpu_init_state(&t->fpu);
     proc_clear(&t->proc);
@@ -243,23 +241,43 @@ int task_alive(int id)
 
 void task_mark_user(void) { current->is_user = 1; }
 
-/* Ctrl+C: marca a la tarea de usuario mas nueva. Seguro desde una IRQ:
-   no libera nada, la tarea muere sola cuando vuelva a correr. */
+/* Ctrl+C: SIGINT a la tarea de usuario mas nueva */
 void task_interrupt_user(void)
 {
     if (!current) return;
     uint64_t f = irq_save();
-    struct task *best = 0;
-    struct task *t = current;
+    struct task *best = 0, *t = current;
     do {
         if (t->is_user && t->state != T_DEAD && (!best || t->id > best->id)) best = t;
         t = t->next;
     } while (t != current);
-    if (best) best->killed = 1;
+    if (best) sig_send(&best->proc, SIGINT);
     irq_restore(f);
 }
 
-int task_killed(void) { return current->killed; }
+int task_sigpending(void)
+{
+    struct proc *p = &current->proc;
+    return (p->sig_pending & (~p->sig_blocked | SIG_UNBLOCKABLE)) != 0;
+}
+int task_killed(void) { return task_sigpending(); }   /* alias transitorio */
+
+int task_kill(int id, int sig)      /* 0 ok, -1 ESRCH */
+{
+    uint64_t f = irq_save();
+    int found = 0;
+    struct task *t = current;
+    do {
+        if ((int)t->id == id && t->state != T_DEAD && t->is_user) {
+            found = 1;
+            if (sig) sig_send(&t->proc, sig);
+            break;
+        }
+        t = t->next;
+    } while (t != current);
+    irq_restore(f);
+    return found ? 0 : -1;
+}
 
 struct proc *task_proc(void) { return &current->proc; }
 int task_id(void) { return (int)current->id; }

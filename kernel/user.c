@@ -97,7 +97,7 @@ int user_wait(int pid, int *status, int nohang)
         irq_restore(f);
         if (!have) return -10;                          /* ECHILD */
         if (nohang) return 0;
-        if (task_killed()) user_kill_self();
+        if (task_sigpending()) return -4; /* EINTR */
         yield();
         __asm__ volatile("sti; hlt; cli" : : : "memory");
     }
@@ -283,14 +283,15 @@ void user_cleanup(void)
 int user_foreground(void) { return fg > 0; }
 
 /* La tarea actual muere por Ctrl+C: mismo camino que exit */
-void user_kill_self(void)
+void user_kill_sig(int sig)
 {
     (void)irq_save();                     /* no se restaura: no vuelve */
-    console_puts("\n[kernel] proceso terminado (Ctrl+C)\n");
-    task_proc()->exit_code = 2;           /* SIGINT */
+    console_puts("\n[kernel] proceso terminado por senal "); console_dec(sig); console_putc('\n');
+    task_proc()->exit_code = sig;
     user_cleanup();
     task_exit();
 }
+void user_kill_self(void) { user_kill_sig(2); }
 
 static void user_task(void *arg)
 {
@@ -420,6 +421,7 @@ static void fork_task(void *arg)
     struct proc *pr = task_proc();
     copy_words(pr, &c->proc, sizeof *pr);
     pr->clear_tid = 0;
+    pr->sig_pending = 0;
     pr->exit_code = 11;
     task_set_space(c->space);                    /* a partir de aca CR3 = clon */
     task_set_fs(pr->fs_base);

@@ -7,6 +7,7 @@
 #define USER_MMAP_LIMIT 0x00007FFF00000000ULL
 
 /* Estado de proceso que Linux/glibc esperan que el kernel recuerde */
+#include "sig.h"
 struct proc {
     uint64_t fs_base;        /* TLS (arch_prctl ARCH_SET_FS) */
     uint64_t clear_tid;      /* set_tid_address */
@@ -15,7 +16,10 @@ struct proc {
     uint64_t mmap_next;      /* paso 3: proxima direccion libre para mmap */
     struct file *fds[NFD];
     char cwd[128];
-    int  exit_code;          /* status estilo wait(): (n<<8) o numero de senal */
+    int  exit_code;
+    uint64_t sig_pending;
+    uint64_t sig_blocked;
+    struct ksigaction sa[NSIG];
 };
 
 static inline void proc_clear(struct proc *p)

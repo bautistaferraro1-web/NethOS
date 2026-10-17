@@ -1,3 +1,4 @@
+#include "sig.h"
 #include "idt.h"
 #include "console.h"
 #include "irq.h"
@@ -66,11 +67,15 @@ static void row(const char *name, uint64_t v)
 
 void exception_handler(struct regs *r)
 {
-    if (r->vector == 0x80) { syscall_dispatch(r); return; }
+    if (r->vector == 0x80) {
+        uint64_t nr = r->rax;
+        syscall_dispatch(r);
+        sig_deliver(r, nr != 15, nr);
+        return;
+    }
     if (r->vector >= 32 && r->vector < 48) {
         irq_dispatch(r->vector - 32);
-        /* Ctrl+C pendiente y la tarea venia de Ring 3: morir como un exit forzado */
-        if ((r->cs & 3) == 3 && task_killed()) user_kill_self();
+        sig_deliver(r, 0, 0);
         return;
     }
     uint64_t cr2;

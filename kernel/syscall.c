@@ -1,3 +1,7 @@
+#include "sig.h"
+#ifndef EINTR
+#define EINTR 4
+#endif
 #include "syscall.h"
 #include "console.h"
 #include "sched.h"
@@ -53,7 +57,7 @@
 #define ENODEV 19
 
 /* El rango tiene que estar en la region de usuario y mapeado */
-static int user_range_ok(uint64_t p, uint64_t len)
+int user_range_ok(uint64_t p, uint64_t len)
 {
     if (p < UBASE || p >= UEND || len > UEND - p) return 0;
     for (uint64_t a = p & ~0xFFFULL; a < p + len; a += 4096) {
@@ -195,7 +199,7 @@ static uint64_t sys_spawn(uint64_t uname, uint64_t uargv)
 static uint64_t sys_wait(uint64_t id)
 {
     while (task_alive((int)id)) {
-        if (task_killed()) user_kill_self();
+        if (task_sigpending()) return ERR(EINTR);
         yield();
         __asm__ volatile("sti; hlt; cli" : : : "memory");
     }
@@ -599,19 +603,52 @@ static int zero_user(uint64_t p, uint64_t n)
     return 0;
 }
 
-/* Todavia no hay entrega de senales: se acepta todo y no se guarda nada */
-static uint64_t sys_sigaction(uint64_t sig, uint64_t act, uint64_t old)
+static uint64_t sys_sigaction(uint64_t sig, uint64_t act, uint64_t old, uint64_t sz)
 {
-    (void)sig; (void)act;
-    if (zero_user(old, 32)) return ERR(EFAULT);
+    struct proc *p = task_proc();
+    if (sz != 8 || sig < 1 || sig >= NSIG) return ERR(EINVAL);
+    if (act && (sig == SIGKILL || sig == SIGSTOP)) return ERR(EINVAL);
+    if ((act && !user_range_ok(act, 32)) || (old && !user_range_ok(old, 32))) return ERR(EFAULT);
+    struct ksigaction *sa = &p->sa[sig - 1];
+    if (old) {
+        uint64_t *o = (uint64_t *)old;
+        o[0] = sa->handler; o[1] = sa->flags; o[2] = sa->restorer; o[3] = sa->mask;
+    }
+    if (act) {
+        const uint64_t *a = (const uint64_t *)act;
+        sa->handler = a[0]; sa->flags = a[1]; sa->restorer = a[2];
+        sa->mask = a[3] & ~SIG_UNBLOCKABLE;
+        if (sa->handler == SIG_IGN || (sa->handler == SIG_DFL && sig_default_ignored((int)sig)))
+            p->sig_pending &= ~SIG_BIT(sig);
+    }
     return 0;
 }
 
-static uint64_t sys_sigprocmask(uint64_t how, uint64_t set, uint64_t old)
+static uint64_t sys_sigprocmask(uint64_t how, uint64_t set, uint64_t old, uint64_t sz)
 {
-    (void)how; (void)set;
-    if (zero_user(old, 8)) return ERR(EFAULT);
+    struct proc *p = task_proc();
+    if (sz != 8) return ERR(EINVAL);
+    if ((set && !user_range_ok(set, 8)) || (old && !user_range_ok(old, 8))) return ERR(EFAULT);
+    uint64_t cur = p->sig_blocked;
+    if (old) *(uint64_t *)old = cur;
+    if (set) {
+        uint64_t s = *(uint64_t *)set;
+        switch (how) {
+        case 0: cur |= s; break;
+        case 1: cur &= ~s; break;
+        case 2: cur = s; break;
+        default: return ERR(EINVAL);
+        }
+        p->sig_blocked = cur & ~SIG_UNBLOCKABLE;
+    }
     return 0;
+}
+
+static uint64_t sys_kill(uint64_t pid, uint64_t sig)
+{
+    if (sig >= NSIG) return ERR(EINVAL);
+    if ((int64_t)pid <= 0) return ERR(3);        /* grupos: tanda 2 */
+    return task_kill((int)pid, (int)sig) ? ERR(3) : 0;
 }
 
 static uint64_t sys_getres(uint64_t a, uint64_t b, uint64_t c)
@@ -802,9 +839,18 @@ void syscall_dispatch(struct regs *r)
         r->rax = id < 0 ? ERR(ENOMEM) : (uint64_t)id;
         break;
     }
-    case SYS_EXECVE: r->rax = sys_execve(r->rdi, r->rsi, r->rdx, r); break;
-    case 13:  r->rax = sys_sigaction(r->rdi, r->rsi, r->rdx); break;
-    case 14:  r->rax = sys_sigprocmask(r->rdi, r->rsi, r->rdx); break;
+    case SYS_EXECVE: {
+        uint64_t rc = sys_execve(r->rdi, r->rsi, r->rdx, r);
+        if ((int64_t)rc >= 0) sig_reset_on_exec(task_proc());
+        r->rax = rc;
+        break;
+    }
+    case 13:  r->rax = sys_sigaction(r->rdi, r->rsi, r->rdx, r->r10); break;
+    case 14:  r->rax = sys_sigprocmask(r->rdi, r->rsi, r->rdx, r->r10); break;
+    case 15:  sig_sigreturn(r); break;            /* no toca rax: restaura todo el frame */
+    case 62:  r->rax = sys_kill(r->rdi, r->rsi); break;
+    case 200: r->rax = sys_kill(r->rdi, r->rsi); break;   /* tkill */
+    case 234: r->rax = sys_kill(r->rsi, r->rdx); break;   /* tgkill */
     case 118: r->rax = sys_getres(r->rdi, r->rsi, r->rdx); break;
     case 120: r->rax = sys_getres(r->rdi, r->rsi, r->rdx); break;
     case 96:  r->rax = sys_gettimeofday(r->rdi, r->rsi); break;
