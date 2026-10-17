@@ -9,7 +9,34 @@
 #define S_IFCHR_ 0020000
 
 static int con_owner;
-static int con_echo;                 /* 1 = modo cocinado: eco + linea completa */
+/* termios del kernel de Linux (36 bytes): 4 flags, c_line, c_cc[19] */
+#define LF_ISIG   0x0001u
+#define LF_ICANON 0x0002u
+#define LF_ECHO   0x0008u
+#define LF_ECHOE  0x0010u
+static struct {
+    uint32_t iflag, oflag, cflag, lflag;
+    uint8_t  line;
+    uint8_t  cc[19];
+} __attribute__((packed)) con_tio;
+
+#define con_echo (con_tio.lflag & LF_ICANON)     /* modo cocinado = ICANON */
+
+static void con_tio_reset(void)
+{
+    uint8_t *p = (uint8_t *)&con_tio;
+    for (unsigned i = 0; i < sizeof con_tio; i++) p[i] = 0;
+    con_tio.iflag = 0x0500;                      /* ICRNL | IXON */
+    con_tio.oflag = 0x0005;                      /* OPOST | ONLCR */
+    con_tio.cflag = 0x00BF;                      /* B38400 | CS8 | CREAD */
+    con_tio.lflag = LF_ISIG;                     /* crudo hasta que alguien pida cocinado */
+    con_tio.cc[0] = 3;      /* VINTR  */
+    con_tio.cc[1] = 0x1C;   /* VQUIT  */
+    con_tio.cc[2] = 0x7F;   /* VERASE */
+    con_tio.cc[3] = 0x15;   /* VKILL  */
+    con_tio.cc[4] = 4;      /* VEOF   */
+    con_tio.cc[6] = 1;      /* VMIN   */
+}
 static char con_line[256];
 static int con_llen, con_lpos;
 
@@ -35,15 +62,16 @@ static int64_t con_read(struct file *f, void *buf, uint64_t n)
             con_llen = con_lpos = 0;
             for (;;) {
                 int c = con_wait_key();
+                if (c < 0) { con_llen = con_lpos = 0; return c; }   /* EINTR */
                 if (c == 0x08 || c == 0x7F) {
-                    if (con_llen > 0) { con_llen--; console_puts("\b \b"); }
+                    if (con_llen > 0) { con_llen--; if (con_tio.lflag & LF_ECHO) console_puts("\b \b"); }
                 } else if (c == '\n' || c == '\r') {
                     con_line[con_llen++] = '\n';
-                    console_putc('\n');
+                    if (con_tio.lflag & LF_ECHO) console_putc('\n');
                     break;
                 } else if (con_llen < (int)sizeof(con_line) - 1) {
                     con_line[con_llen++] = (char)c;
-                    console_putc((char)c);
+                    if (con_tio.lflag & LF_ECHO) console_putc((char)c);
                 }
             }
         }
@@ -51,7 +79,8 @@ static int64_t con_read(struct file *f, void *buf, uint64_t n)
         return (int64_t)i;
     }
 
-    int c = con_wait_key();                      /* modo crudo: como antes */
+    int c = con_wait_key();
+    if (c < 0) return c;                         /* EINTR */
     d[i++] = (char)c;
     while (i < n && (c = keyboard_getc()) >= 0) d[i++] = (char)c;
     return (int64_t)i;
@@ -68,8 +97,25 @@ static int64_t con_write(struct file *f, const void *buf, uint64_t n)
 static int64_t con_ioctl(struct file *f, uint64_t req, uint64_t arg)
 {
     (void)f;
+    if (req >= 0x402C542B && req <= 0x402C542D) {  /* TCSETS2 / TCSETSW2 / TCSETSF2 */
+        uint8_t *d = (uint8_t *)&con_tio;
+        for (int i = 0; i < KTERMIOS_SIZE; i++) d[i] = ((const uint8_t *)arg)[i];
+        return 0;
+    }
+    if (req == 0x540B || req == 0x5409 || req == 0x540A) return 0;           /* TCFLSH / TCSBRK / TCXONC */
     if (req == TCGETS) {
-        for (int i = 0; i < KTERMIOS_SIZE; i++) ((uint8_t *)arg)[i] = 0;
+        const uint8_t *s = (const uint8_t *)&con_tio;
+        for (int i = 0; i < KTERMIOS_SIZE; i++) ((uint8_t *)arg)[i] = s[i];
+        return 0;
+    }
+    if (req == 0x5402 || req == 0x5403 || req == 0x5404) {   /* TCSETS / TCSETSW / TCSETSF */
+        uint8_t *d = (uint8_t *)&con_tio;
+        for (int i = 0; i < KTERMIOS_SIZE; i++) d[i] = ((const uint8_t *)arg)[i];
+        return 0;
+    }
+    if (req == 0x5413) {                                     /* TIOCGWINSZ: texto VGA 80x25 */
+        uint16_t *w = (uint16_t *)arg;
+        w[0] = 25; w[1] = 80; w[2] = 0; w[3] = 0;
         return 0;
     }
     if (req == 0x802C542A) {                       /* TCGETS2: termios2, 44 bytes */
@@ -78,7 +124,13 @@ static int64_t con_ioctl(struct file *f, uint64_t req, uint64_t arg)
     }
     if (req == 0x540F) { *(int *)arg = task_id(); return 0; }   /* TIOCGPGRP */
     if (req == 0x5410) return 0;                                /* TIOCSPGRP */
-    if (req == 0x5F01) { con_owner = task_id(); con_echo = (int)arg; con_llen = con_lpos = 0; return 0; }   /* propio */
+    if (req == 0x5F01) {                           /* propio: 1 = cocinado, 0 = crudo */
+        con_owner = task_id();
+        if (arg) con_tio.lflag |= (LF_ICANON | LF_ECHO | LF_ECHOE);
+        else     con_tio.lflag &= ~(uint32_t)(LF_ICANON | LF_ECHO | LF_ECHOE);
+        con_llen = con_lpos = 0;
+        return 0;
+    }
     return -EINVAL;
 }
 
@@ -96,7 +148,7 @@ static int64_t con_stat(struct file *f, void *st)
 static const struct file_ops con_ops = { con_read, con_write, con_ioctl, con_stat, 0, 0, 0 };
 struct file console_file = { &con_ops, 1, 0, 0 };
 
-void console_cooked_release(void) { if (con_echo && con_owner == task_id()) con_echo = 0; }
+void console_cooked_release(void) { if (con_echo && con_owner == task_id()) con_tio_reset(); }
 
 struct file *file_get(struct file *f) { if (f) f->refcount++; return f; }
 
@@ -108,7 +160,7 @@ void file_put(struct file *f)
 
 void fd_init_std(struct file **fds)
 {
-    con_echo = 0;
+    con_tio_reset();
     for (int i = 0; i < NFD; i++) fds[i] = 0;
     for (int i = 0; i < 3; i++) fds[i] = file_get(&console_file);
 }

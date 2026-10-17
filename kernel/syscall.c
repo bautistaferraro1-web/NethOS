@@ -119,7 +119,8 @@ static uint64_t sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg)
     struct file *f = cur_fd(fd);
     if (!f) return ERR(EBADF);
     if (!f->ops->ioctl) return ERR(ENOTTY);
-    if (req == TCGETS && !user_range_ok(arg, KTERMIOS_SIZE)) return ERR(EFAULT);
+    if ((req == TCGETS || (req >= 0x5402 && req <= 0x5404)) && !user_range_ok(arg, KTERMIOS_SIZE)) return ERR(EFAULT);
+    if (req == 0x5413 && !user_range_ok(arg, 8)) return ERR(EFAULT);
     if (req == 0x802C542A && !user_range_ok(arg, 44)) return ERR(EFAULT);
     if (req == 0x540F && !user_range_ok(arg, 4)) return ERR(EFAULT);
     return (uint64_t)f->ops->ioctl(f, req, arg);
