@@ -2,6 +2,7 @@
 #include "keyboard.h"
 #include "irq.h"
 #include "io.h"
+#include "file.h"
 
 /* Scancode set 1, layout US, make codes 0x00-0x39 */
 static const char normal[] =
@@ -49,9 +50,12 @@ static void kbd_irq(void)
     if (released || code >= 58) return;
 
     char c = shift ? shifted[code] : normal[code];
-    if (ctrl && (c == 'c' || c == 'C')) {
-        if (intr_hook) intr_hook();          /* Ctrl+C: no entra al buffer */
-        return;
+    if (ctrl && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+        if ((c | 0x20) == 'c' && console_isig()) {
+            if (intr_hook) intr_hook();
+            return;
+        }
+        c = (char)(c & 0x1F);
     }
     if (c) push(c);
 }

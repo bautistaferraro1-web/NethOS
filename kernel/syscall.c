@@ -122,7 +122,7 @@ static uint64_t sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg)
     if ((req == TCGETS || (req >= 0x5402 && req <= 0x5404)) && !user_range_ok(arg, KTERMIOS_SIZE)) return ERR(EFAULT);
     if (req == 0x5413 && !user_range_ok(arg, 8)) return ERR(EFAULT);
     if (req == 0x802C542A && !user_range_ok(arg, 44)) return ERR(EFAULT);
-    if (req == 0x540F && !user_range_ok(arg, 4)) return ERR(EFAULT);
+    if ((req == 0x540F || req == 0x5410) && !user_range_ok(arg, 4)) return ERR(EFAULT);
     return (uint64_t)f->ops->ioctl(f, req, arg);
 }
 
@@ -648,8 +648,39 @@ static uint64_t sys_sigprocmask(uint64_t how, uint64_t set, uint64_t old, uint64
 static uint64_t sys_kill(uint64_t pid, uint64_t sig)
 {
     if (sig >= NSIG) return ERR(EINVAL);
-    if ((int64_t)pid <= 0) return ERR(3);        /* grupos: tanda 2 */
-    return task_kill((int)pid, (int)sig) ? ERR(3) : 0;
+    int64_t p = (int64_t)pid;
+    if (p > 0) return task_kill((int)p, (int)sig) ? ERR(3) : 0;
+    if (p == -1) return ERR(3);
+    int pg = p == 0 ? task_pgid() : (int)-p;
+    return task_kill_pgrp(pg, (int)sig) > 0 ? 0 : ERR(3);
+}
+
+static uint64_t sys_setpgid(uint64_t pid, uint64_t pg)
+{
+    if ((int64_t)pid < 0 || (int64_t)pg < 0) return ERR(EINVAL);
+    int me = task_id();
+    int target = pid ? (int)pid : me;
+    int npg = pg ? (int)pg : target;
+    if (target != me && user_parent_of(target) != me) return ERR(3);
+    int rc = task_setpgid(target, npg);
+    return rc == 0 ? 0 : rc == -1 ? ERR(3) : ERR(1);
+}
+
+static uint64_t sys_getpgid(uint64_t pid)
+{
+    int v = task_getpgid((int)pid);
+    return v < 0 ? ERR(3) : (uint64_t)v;
+}
+
+static uint64_t sys_getsid(uint64_t pid)
+{
+    int v = task_getsid((int)pid);
+    return v < 0 ? ERR(3) : (uint64_t)v;
+}
+
+static uint64_t sys_setsid(void)
+{
+    return task_setsid() ? ERR(1) : (uint64_t)task_id();
 }
 
 static uint64_t sys_getres(uint64_t a, uint64_t b, uint64_t c)
@@ -856,7 +887,7 @@ void syscall_dispatch(struct regs *r)
     case 120: r->rax = sys_getres(r->rdi, r->rsi, r->rdx); break;
     case 96:  r->rax = sys_gettimeofday(r->rdi, r->rsi); break;
     case 63:  r->rax = sys_uname(r->rdi); break;
-    case 111: r->rax = (uint64_t)task_id(); break;
+    case 111: r->rax = (uint64_t)task_pgid(); break;
     case 72:  r->rax = sys_fcntl(r->rdi, r->rsi, r->rdx); break;
     case 32:  r->rax = sys_dup(r->rdi); break;
     case 33:  r->rax = sys_dup2(r->rdi, r->rsi); break;
@@ -865,8 +896,10 @@ void syscall_dispatch(struct regs *r)
     case 102: case 104: case 107: case 108: r->rax = 0; break;
     case 21:  r->rax = sys_access(r->rdi, r->rsi); break;
     case 269: r->rax = sys_access(r->rsi, r->rdx); break;
-    case 109: r->rax = 0; break;
-    case 121: case 112: r->rax = (uint64_t)task_id(); break;
+    case 109: r->rax = sys_setpgid(r->rdi, r->rsi); break;
+    case 121: r->rax = sys_getpgid(r->rdi); break;
+    case 112: r->rax = sys_setsid(); break;
+    case 124: r->rax = sys_getsid(r->rdi); break;
     case 87:  r->rax = sys_unlink(r->rdi); break;
     case 263: r->rax = sys_unlink(r->rsi); break;   /* unlinkat: dirfd ignorado */
     case 99:  r->rax = sys_sysinfo(r->rdi); break;

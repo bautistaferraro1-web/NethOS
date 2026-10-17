@@ -19,7 +19,14 @@ void task_mark_user(void);                                 /* la tarea actual es
 void task_interrupt_user(void);                            /* Ctrl+C: marca a la tarea de usuario mas nueva (seguro desde IRQ) */
 int  task_killed(void);
 int  task_sigpending(void);
-int  task_kill(int id, int sig);                                    /* 1 si la tarea actual tiene Ctrl+C pendiente */
+int  task_kill(int id, int sig);
+int  task_pgid(void);
+int  task_sid(void);
+int  task_getpgid(int id);
+int  task_getsid(int id);
+int  task_setpgid(int id, int pg);
+int  task_setsid(void);
+int  task_kill_pgrp(int pg, int sig);                                    /* 1 si la tarea actual tiene Ctrl+C pendiente */
 
 struct proc;
 struct proc *task_proc(void);                              /* estado de proceso de la tarea actual */

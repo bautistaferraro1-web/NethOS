@@ -44,4 +44,6 @@ struct file *fd_lookup(struct file **fds, uint64_t fd);
 int          fd_install(struct file **fds, struct file *f);
 int          fd_close(struct file **fds, uint64_t fd);
 void         fd_close_all(struct file **fds);
+int          console_isig(void);
+int          console_fg_pgrp(void);
 #endif

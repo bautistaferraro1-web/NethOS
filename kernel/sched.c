@@ -5,6 +5,7 @@
 #include "fpu.h"
 #include "proc.h"
 #include "sig.h"
+#include "file.h"
 #ifndef HOST_TEST
 #include "gdt.h"
 #include "vmm.h"
@@ -251,6 +252,8 @@ void task_interrupt_user(void)
         if (t->is_user && t->state != T_DEAD && (!best || t->id > best->id)) best = t;
         t = t->next;
     } while (t != current);
+    int fg = console_fg_pgrp();
+    if (fg && task_kill_pgrp(fg, SIGINT) > 0) { irq_restore(f); return; }
     if (best) sig_send(&best->proc, SIGINT);
     irq_restore(f);
 }
@@ -290,4 +293,88 @@ void task_set_fs(uint64_t base)
     wrmsr_fs(base);
 #endif
     irq_restore(f);
+}
+
+/* ---- process groups y sesiones (pgid/sid 0 = el propio id) ---- */
+static int eff_pgid(struct task *t) { return t->proc.pgid ? t->proc.pgid : (int)t->id; }
+static int eff_sid(struct task *t)  { return t->proc.sid  ? t->proc.sid  : (int)t->id; }
+
+static struct task *find_task(int id)
+{
+    struct task *t = current;
+    do {
+        if ((int)t->id == id && t->state != T_DEAD) return t;
+        t = t->next;
+    } while (t != current);
+    return 0;
+}
+
+int task_pgid(void) { return eff_pgid(current); }
+int task_sid(void)  { return eff_sid(current); }
+
+int task_getpgid(int id)
+{
+    uint64_t f = irq_save();
+    struct task *t = id ? find_task(id) : current;
+    int r = t ? eff_pgid(t) : -1;
+    irq_restore(f);
+    return r;
+}
+
+int task_getsid(int id)
+{
+    uint64_t f = irq_save();
+    struct task *t = id ? find_task(id) : current;
+    int r = t ? eff_sid(t) : -1;
+    irq_restore(f);
+    return r;
+}
+
+int task_setpgid(int id, int pg)
+{
+    uint64_t f = irq_save();
+    struct task *t = find_task(id);
+    int rc = 0;
+    if (t == 0) rc = -1;
+    else {
+        if (pg != (int)t->id) {
+            int found = 0;
+            struct task *u = current;
+            do {
+                if (u->id && u->state != T_DEAD && eff_pgid(u) == pg) { found = 1; break; }
+                u = u->next;
+            } while (u != current);
+            if (found == 0) rc = -2;
+        }
+        if (rc == 0) t->proc.pgid = pg;
+    }
+    irq_restore(f);
+    return rc;
+}
+
+int task_setsid(void)
+{
+    uint64_t f = irq_save();
+    int me = (int)current->id, rc = 0;
+    if (eff_pgid(current) == me) rc = -1;
+    else { current->proc.sid = me; current->proc.pgid = me; }
+    irq_restore(f);
+    return rc;
+}
+
+int task_kill_pgrp(int pg, int sig)
+{
+    if (current == 0) return 0;
+    uint64_t f = irq_save();
+    int n = 0;
+    struct task *t = current;
+    do {
+        if (t->id && t->state != T_DEAD && eff_pgid(t) == pg) {
+            n++;
+            if (sig) sig_send(&t->proc, sig);
+        }
+        t = t->next;
+    } while (t != current);
+    irq_restore(f);
+    return n;
 }

@@ -9,6 +9,7 @@
 #define S_IFCHR_ 0020000
 
 static int con_owner;
+static int con_fgpgrp;
 /* termios del kernel de Linux (36 bytes): 4 flags, c_line, c_cc[19] */
 #define LF_ISIG   0x0001u
 #define LF_ICANON 0x0002u
@@ -65,6 +66,9 @@ static int64_t con_read(struct file *f, void *buf, uint64_t n)
                 if (c < 0) { con_llen = con_lpos = 0; return c; }   /* EINTR */
                 if (c == 0x08 || c == 0x7F) {
                     if (con_llen > 0) { con_llen--; if (con_tio.lflag & LF_ECHO) console_puts("\b \b"); }
+                } else if (c == 4) {
+                    if (con_llen == 0) return 0;
+                    break;
                 } else if (c == '\n' || c == '\r') {
                     con_line[con_llen++] = '\n';
                     if (con_tio.lflag & LF_ECHO) console_putc('\n');
@@ -122,10 +126,16 @@ static int64_t con_ioctl(struct file *f, uint64_t req, uint64_t arg)
         for (int i = 0; i < 44; i++) ((uint8_t *)arg)[i] = 0;
         return 0;
     }
-    if (req == 0x540F) { *(int *)arg = task_id(); return 0; }   /* TIOCGPGRP */
-    if (req == 0x5410) return 0;                                /* TIOCSPGRP */
+    if (req == 0x540F) { *(int *)arg = con_fgpgrp ? con_fgpgrp : task_pgid(); return 0; }
+    if (req == 0x5410) {
+        int pg = *(const int *)arg;
+        if (pg <= 0 || task_kill_pgrp(pg, 0) <= 0) return -1;
+        con_fgpgrp = pg;
+        return 0;
+    }
     if (req == 0x5F01) {                           /* propio: 1 = cocinado, 0 = crudo */
         con_owner = task_id();
+        con_fgpgrp = task_pgid();
         if (arg) con_tio.lflag |= (LF_ICANON | LF_ECHO | LF_ECHOE);
         else     con_tio.lflag &= ~(uint32_t)(LF_ICANON | LF_ECHO | LF_ECHOE);
         con_llen = con_lpos = 0;
@@ -148,7 +158,7 @@ static int64_t con_stat(struct file *f, void *st)
 static const struct file_ops con_ops = { con_read, con_write, con_ioctl, con_stat, 0, 0, 0 };
 struct file console_file = { &con_ops, 1, 0, 0 };
 
-void console_cooked_release(void) { if (con_echo && con_owner == task_id()) con_tio_reset(); }
+void console_cooked_release(void) { if (con_echo && con_owner == task_id()) { con_tio_reset(); con_fgpgrp = 0; } }
 
 struct file *file_get(struct file *f) { if (f) f->refcount++; return f; }
 
@@ -185,3 +195,6 @@ void fd_close_all(struct file **fds)
 {
     for (int i = 0; i < NFD; i++) if (fds[i]) fd_close(fds, i);
 }
+
+int console_isig(void) { return (con_tio.lflag & LF_ISIG) != 0; }
+int console_fg_pgrp(void) { return con_fgpgrp; }

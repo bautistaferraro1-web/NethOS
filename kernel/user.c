@@ -13,6 +13,7 @@
 #include "proc.h"
 #include "file.h"
 #include "idt.h"
+#include "sig.h"
 
 #define USER_CODE        0x0000000000400000ULL   /* donde enlazan los ELF estandar */
 #define USER_STACK_PAGES 16
@@ -61,7 +62,7 @@ static void pt_exit(int id, int status)
     struct pent *e = pt_find(id);
     if (e) {
         if (e->ppid == 0) e->state = PT_FREE;           /* nadie lo va a esperar */
-        else { e->state = PT_ZOMBIE; e->status = status; }
+        else { e->state = PT_ZOMBIE; e->status = status; task_kill(e->ppid, SIGCHLD); }
     }
     irq_restore(f);
 }
@@ -71,6 +72,15 @@ int user_ppid(void)
     uint64_t f = irq_save();
     struct pent *e = pt_find(task_id());
     int p = e ? e->ppid : 0;
+    irq_restore(f);
+    return p;
+}
+
+int user_parent_of(int id)
+{
+    uint64_t f = irq_save();
+    struct pent *e = pt_find(id);
+    int p = e ? e->ppid : -1;
     irq_restore(f);
     return p;
 }
@@ -419,7 +429,10 @@ static void fork_task(void *arg)
     task_mark_user();
     uint64_t f = irq_save();
     struct proc *pr = task_proc();
+    int spg = pr->pgid, ssid = pr->sid;
     copy_words(pr, &c->proc, sizeof *pr);
+    if (spg) pr->pgid = spg;
+    if (ssid) pr->sid = ssid;
     pr->clear_tid = 0;
     pr->sig_pending = 0;
     pr->exit_code = 11;
@@ -443,6 +456,8 @@ int user_fork(const struct regs *r)
     copy_words(&c->regs, r, sizeof c->regs);
     c->space = ns;
     copy_words(&c->proc, task_proc(), sizeof c->proc);
+    c->proc.pgid = task_pgid();
+    c->proc.sid  = task_sid();
     for (int i = 0; i < NFD; i++) file_get(c->proc.fds[i]);
     fg++;
 

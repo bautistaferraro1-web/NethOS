@@ -3,6 +3,7 @@
 #include "sched.h"
 #include "idt.h"
 #include "user.h"
+#include "console.h"
 
 int user_range_ok(uint64_t p, uint64_t n);
 

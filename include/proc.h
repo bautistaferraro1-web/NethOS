@@ -19,6 +19,7 @@ struct proc {
     int  exit_code;
     uint64_t sig_pending;
     uint64_t sig_blocked;
+    int pgid, sid;                      /* 0 = el propio id */
     struct ksigaction sa[NSIG];
 };
 
