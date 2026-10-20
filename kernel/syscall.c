@@ -540,6 +540,23 @@ static uint64_t sys_poll(uint64_t ufds, uint64_t nfds, uint64_t timeout)
     return ready;
 }
 
+/* nanosleep: espera por ticks (100 Hz); EINTR si llega una senal */
+static uint64_t sys_nanosleep(uint64_t req, uint64_t rem)
+{
+    (void)rem;
+    if (!user_range_ok(req, 16)) return ERR(EFAULT);
+    const uint64_t *t = (const uint64_t *)req;
+    if (t[1] >= 1000000000ULL || t[0] > 100000000ULL) return ERR(EINVAL);
+    uint64_t ticks = t[0] * 100 + (t[1] + 9999999ULL) / 10000000ULL;
+    uint64_t end = timer_ticks() + ticks;
+    while (timer_ticks() < end) {
+        if (task_sigpending()) return ERR(4);
+        yield();
+        __asm__ volatile("sti; hlt; cli" : : : "memory");
+    }
+    return 0;
+}
+
 static uint64_t sys_wait4(uint64_t pid, uint64_t ust, uint64_t opt, uint64_t ru)
 {
     (void)ru;
@@ -901,6 +918,8 @@ void syscall_dispatch(struct regs *r)
     case 14:  r->rax = sys_sigprocmask(r->rdi, r->rsi, r->rdx, r->r10); break;
     case 15:  sig_sigreturn(r); break;            /* no toca rax: restaura todo el frame */
     case 7:   r->rax = sys_poll(r->rdi, r->rsi, r->rdx); break;
+    case 35:  r->rax = sys_nanosleep(r->rdi, r->rsi); break;
+    case 230: r->rax = sys_nanosleep(r->rdx, r->r10); break;   /* clock_nanosleep(clk, flags, req, rem) */
     case 62:  r->rax = sys_kill(r->rdi, r->rsi); break;
     case 200: r->rax = sys_kill(r->rdi, r->rsi); break;   /* tkill */
     case 234: r->rax = sys_kill(r->rsi, r->rdx); break;   /* tgkill */
