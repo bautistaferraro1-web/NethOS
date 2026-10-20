@@ -685,7 +685,7 @@ static uint64_t sys_sigprocmask(uint64_t how, uint64_t set, uint64_t old, uint64
 static uint64_t sys_kill(uint64_t pid, uint64_t sig)
 {
     if (sig >= NSIG) return ERR(EINVAL);
-    int64_t p = (int64_t)pid;
+    int64_t p = (int32_t)pid;                      /* pid_t es de 32 bits con signo */
     if (p > 0) return task_kill((int)p, (int)sig) ? ERR(3) : 0;
     if (p == -1) return ERR(3);
     int pg = p == 0 ? task_pgid() : (int)-p;
