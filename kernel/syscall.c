@@ -520,6 +520,26 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t buf, uint64_t count)
     return (uint64_t)f->ops->getdents(f, (void *)buf, count);
 }
 
+/* poll minimo: todo fd valido se reporta listo para leer/escribir (read bloquea si hace falta) */
+struct kpollfd { int32_t fd; int16_t events, revents; };
+
+static uint64_t sys_poll(uint64_t ufds, uint64_t nfds, uint64_t timeout)
+{
+    (void)timeout;
+    if (nfds > 64) return ERR(EINVAL);
+    if (nfds && !user_range_ok(ufds, nfds * sizeof(struct kpollfd))) return ERR(EFAULT);
+    struct kpollfd *p = (struct kpollfd *)ufds;
+    uint64_t ready = 0;
+    for (uint64_t i = 0; i < nfds; i++) {
+        p[i].revents = 0;
+        if (p[i].fd < 0) continue;
+        if (!fd_lookup(task_proc()->fds, (uint64_t)p[i].fd)) { p[i].revents = 0x20; ready++; continue; }
+        p[i].revents = p[i].events & (0x001 | 0x004);
+        if (p[i].revents) ready++;
+    }
+    return ready;
+}
+
 static uint64_t sys_wait4(uint64_t pid, uint64_t ust, uint64_t opt, uint64_t ru)
 {
     (void)ru;
@@ -880,6 +900,7 @@ void syscall_dispatch(struct regs *r)
     case 13:  r->rax = sys_sigaction(r->rdi, r->rsi, r->rdx, r->r10); break;
     case 14:  r->rax = sys_sigprocmask(r->rdi, r->rsi, r->rdx, r->r10); break;
     case 15:  sig_sigreturn(r); break;            /* no toca rax: restaura todo el frame */
+    case 7:   r->rax = sys_poll(r->rdi, r->rsi, r->rdx); break;
     case 62:  r->rax = sys_kill(r->rdi, r->rsi); break;
     case 200: r->rax = sys_kill(r->rdi, r->rsi); break;   /* tkill */
     case 234: r->rax = sys_kill(r->rsi, r->rdx); break;   /* tgkill */
