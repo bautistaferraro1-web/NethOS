@@ -58,6 +58,9 @@ static int64_t con_read(struct file *f, void *buf, uint64_t n)
     char *d = buf;
     uint64_t i = 0;
 
+    /* lectura desde background: sin SIGTTIN/stop todavia, devolvemos EIO en vez de robar teclas */
+    if (con_fgpgrp && task_pgid() != con_fgpgrp) return -5;
+
     if (con_echo) {
         if (con_lpos >= con_llen) {              /* armar una linea nueva */
             con_llen = con_lpos = 0;
