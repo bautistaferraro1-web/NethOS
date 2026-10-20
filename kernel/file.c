@@ -127,6 +127,7 @@ static int64_t con_ioctl(struct file *f, uint64_t req, uint64_t arg)
     }
     if (req == 0x802C542A) {                       /* TCGETS2: termios2, 44 bytes */
         for (int i = 0; i < 44; i++) ((uint8_t *)arg)[i] = 0;
+        for (int i = 0; i < KTERMIOS_SIZE; i++) ((uint8_t *)arg)[i] = ((const uint8_t *)&con_tio)[i];
         return 0;
     }
     if (req == 0x540F) { *(int *)arg = con_fgpgrp ? con_fgpgrp : task_pgid(); return 0; }
