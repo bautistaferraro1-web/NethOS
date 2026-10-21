@@ -5,6 +5,9 @@
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
 
+#define MAXL 24
+#define MAXW 80
+
 static void cpu_name(char *out)
 {
     unsigned r[12], max;
@@ -18,18 +21,44 @@ static void cpu_name(char *out)
     out[48] = 0;
 }
 
+/* Lee el logo de /etc/nethos-logo.txt; devuelve la cantidad de lineas (0 si no existe) */
+static int load_logo(char lines[MAXL][MAXW])
+{
+    FILE *f = fopen("/etc/nethos-logo.txt", "r");
+    if (f == NULL) return 0;
+    int n = 0;
+    char buf[256];
+    while (n < MAXL && fgets(buf, sizeof buf, f) != NULL) {
+        size_t l = strlen(buf);
+        while (l > 0 && (buf[l-1] == '\n' || buf[l-1] == '\r' || buf[l-1] == ' ' || buf[l-1] == '\t')) l--;
+        if (l > MAXW - 1) l = MAXW - 1;
+        memcpy(lines[n], buf, l);
+        lines[n][l] = 0;
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
 int main(void)
 {
-    static const char *logo[] = {
-        "  _    _   ______	",
-        " | \\ | | | _____|	",
-        " |  \\| | | |____	",
-        " | |\\  | | |____|	",
-        " | | \\ | | |____	",
-	" |_|  \\_ |______| 	",
-        "         ",
-        "         ",
-    };
+    static char logo[MAXL][MAXW];
+    int nlogo = load_logo(logo);
+    if (nlogo == 0) {
+        static const char *def[] = {
+            "  _    _   ______",
+            " | \\ | | | _____|",
+            " |  \\| | | |____",
+            " | |\\  | | |____|",
+            " | | \\ | | |____",
+            " |_|  \\_ |______|",
+        };
+        for (int i = 0; i < 6; i++) strcpy(logo[nlogo++], def[i]);
+    }
+    int width = 0;
+    for (int i = 0; i < nlogo; i++) { int l = (int)strlen(logo[i]); if (l > width) width = l; }
+    width += 3;
+
     struct utsname u;
     uname(&u);
 
@@ -58,7 +87,11 @@ int main(void)
         unsigned long fre = ((unsigned long)si.freeram * si.mem_unit) >> 20;
         snprintf(memline, sizeof memline, "Memory: %lu MiB / %lu MiB", tot - fre, tot);
     } else snprintf(memline, sizeof memline, "Memory: desconocida");
+
     const char *info[] = { hostline, "-----------", osline, kline, upline, shline, cpuline, memline };
-    for (int i = 0; i < 8; i++) printf("%-17s %s\n", logo[i], info[i]);
+    int ninfo = 8;
+    int rows = nlogo > ninfo ? nlogo : ninfo;
+    for (int i = 0; i < rows; i++)
+        printf("%-*s%s\n", width, i < nlogo ? logo[i] : "", i < ninfo ? info[i] : "");
     return 0;
 }

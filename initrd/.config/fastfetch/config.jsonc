@@ -1,0 +1,7 @@
+{
+  "logo": {
+    "type": "file-raw",
+    "source": "/etc/nethos-logo.txt",
+    "color": { "1": "blue" }
+  }
+}
