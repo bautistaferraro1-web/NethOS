@@ -21,6 +21,7 @@ struct proc {
     uint64_t sig_blocked;
     int pgid, sid;                      /* 0 = el propio id */
     struct ksigaction sa[NSIG];
+    int stopped;                        /* 0 = corriendo, si no: senal que lo detuvo */
 };
 
 static inline void proc_clear(struct proc *p)

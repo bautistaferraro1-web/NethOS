@@ -20,8 +20,10 @@ static volatile uint8_t head, tail;
 static char buf[BUF];
 static int shift, ext, ctrl;
 static void (*intr_hook)(void);
+static void (*susp_hook)(void);
 
 void keyboard_set_intr(void (*fn)(void)) { intr_hook = fn; }
+void keyboard_set_susp(void (*fn)(void)) { susp_hook = fn; }
 
 static void push(char c)
 {
@@ -53,6 +55,10 @@ static void kbd_irq(void)
     if (ctrl && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
         if ((c | 0x20) == 'c' && console_isig()) {
             if (intr_hook) intr_hook();
+            return;
+        }
+        if ((c | 0x20) == 'z' && console_isig()) {
+            if (susp_hook) susp_hook();
             return;
         }
         c = (char)(c & 0x1F);

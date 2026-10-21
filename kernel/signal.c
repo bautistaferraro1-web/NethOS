@@ -18,7 +18,6 @@ int sig_default_ignored(int sig)
 {
     switch (sig) {
     case SIGCHLD: case SIGURG: case SIGWINCH: case SIGCONT:
-    case SIGSTOP: case SIGTSTP: case SIGTTIN: case SIGTTOU:
         return 1;
     }
     return 0;
@@ -27,6 +26,8 @@ int sig_default_ignored(int sig)
 void sig_send(struct proc *p, int sig)
 {
     if (sig < 1 || sig >= NSIG) return;
+    if (sig == SIGCONT) { p->sig_pending &= ~SIG_STOPMASK; *(volatile int *)&p->stopped = 0; }
+    else if (SIG_BIT(sig) & SIG_STOPMASK) p->sig_pending &= ~SIG_BIT(SIGCONT);
     if (sig != SIGKILL && sig != SIGSTOP) {
         uint64_t h = p->sa[sig - 1].handler;
         if (h == SIG_IGN) return;
@@ -50,6 +51,23 @@ static void copy_words(void *d, const void *s, uint64_t n)
     for (uint64_t i = 0; i < n / 8; i++) dd[i] = ss[i];
 }
 
+extern void user_note_stop(int sig);
+extern void user_note_cont(void);
+
+static void do_stop(struct regs *r, int sig, int from_syscall, uint64_t nr)
+{
+    struct proc *p = task_proc();
+    *(volatile int *)&p->stopped = sig;
+    user_note_stop(sig);
+    while (*(volatile int *)&p->stopped) {
+        if (p->sig_pending & SIG_BIT(SIGKILL)) user_kill_sig(SIGKILL);
+        yield();
+        __asm__ volatile("sti; hlt; cli" : : : "memory");
+    }
+    user_note_cont();
+    if (from_syscall && r->rax == (uint64_t)-4) { r->rip -= 2; r->rax = nr; }
+}
+
 void sig_deliver(struct regs *r, int from_syscall, uint64_t nr)
 {
     if ((r->cs & 3) != 3) return;
@@ -62,6 +80,11 @@ void sig_deliver(struct regs *r, int from_syscall, uint64_t nr)
         ready = p->sig_pending & (~p->sig_blocked | SIG_UNBLOCKABLE);
 
         struct ksigaction *sa = &p->sa[sig - 1];
+        if (sig != SIGKILL && sa->handler == SIG_DFL && (SIG_BIT(sig) & SIG_STOPMASK)) {
+            do_stop(r, sig, from_syscall, nr);
+            ready = p->sig_pending & (~p->sig_blocked | SIG_UNBLOCKABLE);
+            continue;
+        }
         if (sig == SIGKILL || (sa->handler == SIG_DFL && !sig_default_ignored(sig)))
             user_kill_sig(sig);
         if (sa->handler == SIG_DFL || sa->handler == SIG_IGN) continue;

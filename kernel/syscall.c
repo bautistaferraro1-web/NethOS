@@ -557,13 +557,15 @@ static uint64_t sys_nanosleep(uint64_t req, uint64_t rem)
     return 0;
 }
 
+extern int user_wait2(int pid, int *status, int nohang, int untraced);
+
 static uint64_t sys_wait4(uint64_t pid, uint64_t ust, uint64_t opt, uint64_t ru)
 {
     (void)ru;
     if (opt & ~(1ULL | 2ULL | 8ULL)) return ERR(EINVAL);   /* WNOHANG; WUNTRACED y WCONTINUED se ignoran (aun no hay stop) */
     if (ust && !user_range_ok(ust, 4)) return ERR(EFAULT);
     int st = 0;
-    int r = user_wait((int)pid, &st, (int)(opt & 1));
+    int r = user_wait2((int)pid, &st, (int)(opt & 1), (int)((opt >> 1) & 1));
     if (r > 0 && ust) *(int *)ust = st;
     return (uint64_t)(int64_t)r;
 }

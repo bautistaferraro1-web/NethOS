@@ -258,6 +258,15 @@ void task_interrupt_user(void)
     irq_restore(f);
 }
 
+void task_susp_user(void)
+{
+    if (!current) return;
+    uint64_t f = irq_save();
+    int fg = console_fg_pgrp();
+    if (fg) task_kill_pgrp(fg, SIGTSTP);
+    irq_restore(f);
+}
+
 int task_sigpending(void)
 {
     struct proc *p = &current->proc;

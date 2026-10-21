@@ -31,7 +31,7 @@ static volatile int fg;                    /* procesos de usuario vivos */
 /* ---- tabla de procesos: padre, estado y status de salida (para wait4) ---- */
 #define PT_MAX 64
 enum { PT_FREE, PT_RUN, PT_ZOMBIE };
-struct pent { int id, ppid, state, status; };
+struct pent { int id, ppid, state, status, stopped, stop_rep; };
 static struct pent ptab[PT_MAX];
 
 static struct pent *pt_find(int id)
@@ -45,7 +45,7 @@ static int pt_add(int id, int ppid)
 {
     for (int i = 0; i < PT_MAX; i++)
         if (ptab[i].state == PT_FREE) {
-            ptab[i].id = id; ptab[i].ppid = ppid; ptab[i].state = PT_RUN; ptab[i].status = 0;
+            ptab[i].id = id; ptab[i].ppid = ppid; ptab[i].state = PT_RUN; ptab[i].status = 0; ptab[i].stopped = 0; ptab[i].stop_rep = 0;
             return 0;
         }
     return -1;
@@ -76,6 +76,22 @@ int user_ppid(void)
     return p;
 }
 
+void user_note_stop(int sig)
+{
+    uint64_t f = irq_save();
+    struct pent *e = pt_find(task_id());
+    if (e) { e->stopped = sig; e->stop_rep = 0; if (e->ppid) task_kill(e->ppid, SIGCHLD); }
+    irq_restore(f);
+}
+
+void user_note_cont(void)
+{
+    uint64_t f = irq_save();
+    struct pent *e = pt_find(task_id());
+    if (e) e->stopped = 0;
+    irq_restore(f);
+}
+
 int user_parent_of(int id)
 {
     uint64_t f = irq_save();
@@ -85,7 +101,10 @@ int user_parent_of(int id)
     return p;
 }
 
-int user_wait(int pid, int *status, int nohang)
+int user_wait2(int pid, int *status, int nohang, int untraced);
+int user_wait(int pid, int *status, int nohang) { return user_wait2(pid, status, nohang, 0); }
+
+int user_wait2(int pid, int *status, int nohang, int untraced)
 {
     int me = task_id();
     for (;;) {
@@ -96,6 +115,13 @@ int user_wait(int pid, int *status, int nohang)
             if (!e->state || e->ppid != me) continue;
             if (pid > 0 && e->id != pid) continue;
             have = 1;
+            if (untraced && e->state == PT_RUN && e->stopped && !e->stop_rep) {
+                e->stop_rep = 1;
+                if (status) *status = (e->stopped << 8) | 0x7f;
+                int sid = e->id;
+                irq_restore(f);
+                return sid;
+            }
             if (e->state == PT_ZOMBIE) {
                 int id = e->id;
                 if (status) *status = e->status;
@@ -355,6 +381,7 @@ static void user_task(void *arg)
 static int spawn(const char *name, int which, const struct uargs *args)
 {
     keyboard_set_intr(task_interrupt_user);
+    keyboard_set_susp(task_susp_user);
 
     uint64_t f = irq_save();
     struct launch *l = kmalloc(sizeof(*l));

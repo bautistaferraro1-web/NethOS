@@ -16,6 +16,7 @@ void     task_set_space(uint64_t space);                   /* espacio de la tare
 uint64_t task_get_space(void);
 
 void task_mark_user(void);                                 /* la tarea actual es de usuario */
+void task_susp_user(void);
 void task_interrupt_user(void);                            /* Ctrl+C: marca a la tarea de usuario mas nueva (seguro desde IRQ) */
 int  task_killed(void);
 int  task_sigpending(void);

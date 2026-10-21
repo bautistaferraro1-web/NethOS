@@ -39,6 +39,7 @@ struct proc;
 
 #define SIG_BIT(s)      (1ULL << ((s) - 1))
 #define SIG_UNBLOCKABLE (SIG_BIT(SIGKILL) | SIG_BIT(SIGSTOP))
+#define SIG_STOPMASK    (SIG_BIT(SIGSTOP) | SIG_BIT(SIGTSTP) | SIG_BIT(SIGTTIN) | SIG_BIT(SIGTTOU))
 
 /* Mismo layout que kernel_sigaction de x86_64 (32 bytes) */
 struct ksigaction { uint64_t handler, flags, restorer, mask; };
