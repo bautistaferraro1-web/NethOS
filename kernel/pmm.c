@@ -15,6 +15,7 @@ struct mb2_mmap_entry { uint64_t base, length; uint32_t type, reserved; };
 static uint8_t  bitmap[MAX_PAGES / 8];   /* 1 = usada, 0 = libre */
 static uint64_t hint;
 static uint64_t used_pages = MAX_PAGES;
+static uint64_t avail_pages;              /* RAM disponible segun el mapa (total real) */
 
 static inline int  bit_get(uint64_t i) { return bitmap[i >> 3] & (1 << (i & 7)); }
 static inline void bit_set(uint64_t i) { bitmap[i >> 3] |=  (1 << (i & 7)); }
@@ -27,7 +28,7 @@ static void mark_free(uint64_t base, uint64_t len)
     if (end > MAX_MEM) end = MAX_MEM;
     for (uint64_t a = start; a < end; a += PAGE_SIZE) {
         uint64_t i = a / PAGE_SIZE;
-        if (bit_get(i)) { bit_clr(i); used_pages--; }
+        if (bit_get(i)) { bit_clr(i); used_pages--; avail_pages++; }
     }
 }
 
@@ -126,7 +127,7 @@ void pmm_free_page(uint64_t phys)
 }
 
 uint64_t pmm_free_pages(void)  { return MAX_PAGES - used_pages; }
-uint64_t pmm_total_pages(void) { return MAX_PAGES; }
+uint64_t pmm_total_pages(void) { return avail_pages ? avail_pages : MAX_PAGES; }
 
 uint64_t pmm_alloc_contiguous(uint64_t n)
 {
