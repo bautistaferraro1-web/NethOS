@@ -45,7 +45,7 @@ int nmain(int argc, char **argv)
     char line[80];
     int len = 0;
 
-    print("[nsh] shell de Nethel. 'help' para ayuda.\n$ ");
+    print("[nsh] shell de Nethra. 'help' para ayuda.\n$ ");
     for (;;) {
         char c;
         long n = sys_read(0, &c, 1);

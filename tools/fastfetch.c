@@ -24,7 +24,7 @@ static void cpu_name(char *out)
 /* Lee el logo de /etc/nethos-logo.txt; devuelve la cantidad de lineas (0 si no existe) */
 static int load_logo(char lines[MAXL][MAXW])
 {
-    FILE *f = fopen("/etc/nethos-logo.txt", "r");
+    FILE *f = fopen("/etc/nethra-logo.txt", "r");
     if (f == NULL) return 0;
     int n = 0;
     char buf[256];
@@ -73,8 +73,8 @@ int main(void)
 
     const char *sh = getenv("SHELL");
     char hostline[96], upline[64], kline[160], cpuline[80], shline[64], osline[32];
-    snprintf(hostline, sizeof hostline, "%s@nethel", getenv("USER") ? getenv("USER") : "root");
-    snprintf(osline, sizeof osline, "OS:     NethOS");
+    snprintf(hostline, sizeof hostline, "%s@nethra", getenv("USER") ? getenv("USER") : "root");
+    snprintf(osline, sizeof osline, "OS:     Nethra");
     snprintf(kline, sizeof kline, "Kernel: Nethel (%s %s)", u.sysname, u.machine);
     snprintf(upline, sizeof upline, "Uptime: %ldh %ldm %lds", h, m, s);
     snprintf(shline, sizeof shline, "Shell:  %s", sh ? sh : "bash");

@@ -121,7 +121,7 @@ static void run_command(const char *cmd)
 void kernel_main(uint64_t magic, uint64_t mb2_info)
 {
     console_clear();
-    console_puts("Nethel kernel 0.1 - NethOS\n");
+    console_puts("Nethel kernel 0.1 - Nethra\n");
     console_puts("kernel_main @ "); console_hex((uint64_t)&kernel_main); console_puts("\n\n");
 
     if ((uint32_t)magic != MB2_MAGIC) {
@@ -165,7 +165,7 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
     (void)r;
 #endif
 
-    console_puts("\nNethel listo. Escribi 'help'.\n> ");
+    console_puts("\nNethra listo. Escribi 'help'.\n> ");
 
     char line[80];
     int len = 0;

@@ -1,1 +1,1 @@
-hola desde el initramfs de Nethel
+hola desde el initramfs de Nethra

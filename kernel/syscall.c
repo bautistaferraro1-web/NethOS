@@ -748,7 +748,7 @@ static uint64_t sys_uname(uint64_t u)
     if (zero_user(u, 390) || !u) return ERR(EFAULT);
     char *b = (char *)u;
     put_field(b + 0,   "Linux");
-    put_field(b + 65,  "nethel");
+    put_field(b + 65,  "nethra");
     put_field(b + 130, "6.1.0");
     put_field(b + 195, "#1 Nethel");
     put_field(b + 260, "x86_64");
