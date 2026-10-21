@@ -1,4 +1,6 @@
 #include "file.h"
+#include "proc.h"
+#include "sig.h"
 #include "console.h"
 #include "keyboard.h"
 #include "sched.h"
@@ -59,7 +61,13 @@ static int64_t con_read(struct file *f, void *buf, uint64_t n)
     uint64_t i = 0;
 
     /* lectura desde background: sin SIGTTIN/stop todavia, devolvemos EIO en vez de robar teclas */
-    if (con_fgpgrp && task_pgid() != con_fgpgrp) return -5;
+    if (con_fgpgrp && task_pgid() != con_fgpgrp) {
+        struct proc *bp = task_proc();
+        if (bp->sa[SIGTTIN - 1].handler == SIG_IGN || (bp->sig_blocked & SIG_BIT(SIGTTIN)))
+            return -5;                           /* EIO: ignora o bloquea SIGTTIN */
+        task_kill_pgrp(task_pgid(), SIGTTIN);    /* se detiene en sig_deliver */
+        return -4;                               /* EINTR: se reintenta al continuar */
+    }
 
     if (con_echo) {
         if (con_lpos >= con_llen) {              /* armar una linea nueva */
