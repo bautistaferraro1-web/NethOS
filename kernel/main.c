@@ -165,7 +165,8 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
     (void)r;
 #endif
 
-    console_puts("\nNethra listo. Escribi 'help'.\n> ");
+    console_puts("\nNethra listo.\n");
+    if (user_spawn_name("init") < 0) console_puts("init no encontrado. Escribi 'help'.\n> ");
 
     char line[80];
     int len = 0;
