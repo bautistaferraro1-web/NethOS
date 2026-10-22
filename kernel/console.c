@@ -11,6 +11,7 @@
 #define FB_PAGE_MASK (~(uint64_t)0xFFF)
 
 static int cx, cy;
+static int saved_cx, saved_cy;
 static uint8_t color = 0x07;
 
 static int fb_active;
@@ -353,6 +354,25 @@ static void ansi_dispatch(char final)
     int rows = fb_active ? fb_rows : H;
 
     switch (final) {
+    case 's':
+        saved_cx = cx;
+        saved_cy = cy;
+        break;
+
+    case 'u': {
+        int cols = fb_active ? fb_cols : W;
+        int rows = fb_active ? fb_rows : H;
+
+        cx = saved_cx;
+        cy = saved_cy;
+
+        if (cx < 0) cx = 0;
+        if (cy < 0) cy = 0;
+        if (cx >= cols) cx = cols - 1;
+        if (cy >= rows) cy = rows - 1;
+        break;
+    }
+
     case 'H':
     case 'f': {
         int row = ansi_param(0, 1);
