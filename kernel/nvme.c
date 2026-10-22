@@ -69,6 +69,10 @@ static uint64_t nvme_data_phys;
 static uint32_t nvme_sector_size;
 static int nvme_ready;
 
+#ifdef NVME_TEST_PERSIST
+static void nvme_selftest_persist(void);
+#endif
+
 static uint32_t reg_read32(uint32_t off)
 {
     return *(volatile uint32_t *)(nvme_regs + off);
@@ -479,8 +483,10 @@ void nvme_init(void)
         }
     }
 
-#ifdef NVME_TEST_WRITES
+#if defined(NVME_TEST_WRITES)
     nvme_selftest_write();
+#elif defined(NVME_TEST_PERSIST)
+    nvme_selftest_persist();
 #endif
 }
 
@@ -588,5 +594,37 @@ void nvme_selftest_write(void)
     }
 
     console_puts("NVMe TEST WRITE: write/read LBA 8 OK\n");
+}
+#endif
+
+
+#ifdef NVME_TEST_PERSIST
+static void nvme_selftest_persist(void)
+{
+    static uint8_t actual[4096];
+
+    if (!nvme_ready || nvme_sector_count <= 8 ||
+        nvme_sector_size != 512) {
+        console_puts("NVMe TEST PERSIST: dispositivo no compatible\n");
+        return;
+    }
+
+    console_puts("NVMe TEST PERSIST: leyendo LBA 8 sin escribir...\n");
+
+    if (nvme_read_blocks(8, 1, actual) != 0) {
+        console_puts("NVMe TEST PERSIST: lectura FALLIDA\n");
+        return;
+    }
+
+    for (unsigned i = 0; i < 512; i++) {
+        uint8_t expected = (uint8_t)(i * 37u + 11u);
+
+        if (actual[i] != expected) {
+            console_puts("NVMe TEST PERSIST: datos distintos\n");
+            return;
+        }
+    }
+
+    console_puts("NVMe TEST PERSIST: datos conservados; lectura OK\n");
 }
 #endif
