@@ -170,10 +170,94 @@ void console_clear(void)
     cx = cy = 0;
 }
 
+
+/* Parser ANSI SGR: conserva su estado entre llamadas a console_putc(). */
+static int ansi_state;
+static int ansi_params[8];
+static int ansi_count, ansi_value, ansi_have;
+static int ansi_bold;
+
+static uint8_t ansi_vga_color(int n)
+{
+    static const uint8_t map[8] = {0, 4, 2, 6, 1, 5, 3, 7};
+    if (n < 0 || n > 15) return 7;
+    return n < 8 ? map[n] : (uint8_t)(map[n - 8] + 8);
+}
+
+static void ansi_sgr(void)
+{
+    if (ansi_have || ansi_count == 0) {
+        if (ansi_count < 8)
+            ansi_params[ansi_count++] = ansi_have ? ansi_value : 0;
+    }
+
+    for (int i = 0; i < ansi_count; i++) {
+        int n = ansi_params[i];
+        int fg = color & 15;
+        int bg = (color >> 4) & 15;
+
+        if (n == 0) {
+            color = 0x07;
+            ansi_bold = 0;
+        } else if (n == 1) {
+            ansi_bold = 1;
+            if (fg < 8) fg += 8;
+        } else if (n == 22) {
+            ansi_bold = 0;
+            if (fg >= 8) fg -= 8;
+        } else if (n >= 30 && n <= 37) {
+            fg = ansi_vga_color(n - 30 + (ansi_bold ? 8 : 0));
+        } else if (n >= 90 && n <= 97) {
+            fg = ansi_vga_color(n - 90 + 8);
+        } else if (n >= 40 && n <= 47) {
+            bg = ansi_vga_color(n - 40);
+        } else if (n >= 100 && n <= 107) {
+            bg = ansi_vga_color(n - 100 + 8);
+        } else if (n == 39) {
+            fg = 7;
+        } else if (n == 49) {
+            bg = 0;
+        }
+
+        color = (uint8_t)((bg << 4) | fg);
+    }
+
+    ansi_count = ansi_value = ansi_have = 0;
+}
+
 static void putc_raw(char c)
 {
+    if (ansi_state == 1) {
+        ansi_state = (c == '[') ? 2 : 0;
+        ansi_count = ansi_value = ansi_have = 0;
+        return;
+    }
+
+    if (ansi_state == 2) {
+        if (c >= '0' && c <= '9') {
+            if (ansi_value < 1000) ansi_value = ansi_value * 10 + c - '0';
+            ansi_have = 1;
+            return;
+        }
+        if (c == ';') {
+            if (ansi_count < 8)
+                ansi_params[ansi_count++] = ansi_have ? ansi_value : 0;
+            ansi_value = ansi_have = 0;
+            return;
+        }
+        if (c == 'm') ansi_sgr();
+        ansi_state = 0;
+        return;
+    }
+
+    if ((unsigned char)c == 27) {
+        ansi_state = 1;
+        return;
+    }
+
     int cols = fb_active ? fb_cols : W;
     int rows = fb_active ? fb_rows : H;
+
     if (c == '\n') { cx = 0; cy++; }
     else if (c == '\r') cx = 0;
     else if (c == '\b') {
@@ -182,12 +266,14 @@ static void putc_raw(char c)
             if (fb_active) fb_cell(cx, cy, ' ');
             else VGA[cy * W + cx] = ((uint16_t)color << 8) | ' ';
         }
-    } else if (c == '\t') cx = (cx + 8) & ~7;
-    else {
+    } else if (c == '\t') {
+        cx = (cx + 8) & ~7;
+    } else {
         if (fb_active) fb_cell(cx, cy, (uint8_t)c);
         else VGA[cy * W + cx] = ((uint16_t)color << 8) | (uint8_t)c;
         cx++;
     }
+
     if (cx >= cols) { cx = 0; cy++; }
     if (cy >= rows) scroll();
 }
