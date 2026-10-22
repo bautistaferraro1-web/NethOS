@@ -138,6 +138,15 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
 
     pmm_init(mb2_info);
     vmm_init();
+
+    if (console_init_framebuffer(mb2_info)) {
+        console_clear();
+        console_puts("Nethel kernel 0.1 - Nethra [framebuffer]\n");
+        console_puts("Framebuffer: OK\n\n");
+    } else {
+        console_puts("Framebuffer no disponible; usando VGA/COM1\n");
+    }
+
     vmm_selftest();
 
     heap_init(1024);                         /* 4 MiB */

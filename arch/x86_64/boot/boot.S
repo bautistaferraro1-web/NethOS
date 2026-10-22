@@ -13,6 +13,13 @@ mb2_header_start:
     .long mb2_header_end - mb2_header_start
     .long -(MB2_MAGIC + 0 + (mb2_header_end - mb2_header_start))
     .align 8
+    .short 5                /* tag: framebuffer */
+    .short 0
+    .long 20
+    .long 1024              /* ancho */
+    .long 768               /* alto */
+    .long 32                /* bpp */
+    .align 8
     .short 0
     .short 0
     .long 8

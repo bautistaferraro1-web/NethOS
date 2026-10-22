@@ -2,6 +2,7 @@
 #define NETHEL_CONSOLE_H
 #include <stdint.h>
 
+int console_init_framebuffer(uint64_t mb2_info);
 void console_clear(void);
 void console_set_color(uint8_t fg, uint8_t bg);
 void console_putc(char c);
