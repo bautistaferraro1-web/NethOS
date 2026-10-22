@@ -75,9 +75,22 @@ static int64_t con_read(struct file *f, void *buf, uint64_t n)
             for (;;) {
                 int c = con_wait_key();
                 if (c < 0) { con_llen = con_lpos = 0; return c; }   /* EINTR */
-                if (c == 0x08 || c == 0x7F) {
-                    if (con_llen > 0) { con_llen--; if (con_tio.lflag & LF_ECHO) console_puts("\b \b"); }
-                } else if (c == 4) {
+                if (c == 0x08 || c == 0x7F ||
+                    (con_tio.cc[2] != 0 && c == con_tio.cc[2])) {
+                    if (con_llen > 0) {
+                        con_llen--;
+                        if (con_tio.lflag & LF_ECHO)
+                            console_puts("\b \b");
+                    }
+                } else if (con_tio.cc[3] != 0 &&
+                           c == con_tio.cc[3]) {
+                    while (con_llen > 0) {
+                        con_llen--;
+                        if (con_tio.lflag & LF_ECHO)
+                            console_puts("\b \b");
+                    }
+                } else if (con_tio.cc[4] != 0 &&
+                           c == con_tio.cc[4]) {
                     if (con_llen == 0) return 0;
                     break;
                 } else if (c == '\n' || c == '\r') {
