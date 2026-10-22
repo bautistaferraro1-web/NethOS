@@ -18,7 +18,7 @@ BUSYBOX_URL="https://busybox.net/downloads/busybox-${BUSYBOX_VER}.tar.bz2"
 
 # SHA-256 del archivo BusyBox 1.36.1 publicado oficialmente.
 BUSYBOX_SHA256="b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314"
-BASH_SHA256="62dd49c44c399ed1b3f7f731e87a782334d834f08e098a35f2c87547d5dbb269"
+BASH_SHA256="0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba"
 
 for cmd in curl tar sha256sum gcc make ld readelf file; do
     command -v "$cmd" >/dev/null 2>&1 || {
