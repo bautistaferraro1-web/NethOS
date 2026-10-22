@@ -483,7 +483,7 @@ static void putc_raw(char c)
             ansi_sgr();
         } else if (c == 'H' || c == 'f' || c == 'J' || c == 'K' ||
                    c == 'A' || c == 'B' || c == 'C' || c == 'D' ||
-                   c == 'S' || c == 'T') {
+                   c == 'S' || c == 'T' || c == 's' || c == 'u') {
             ansi_dispatch(c);
         } else {
             ansi_count = ansi_value = ansi_have = 0;
