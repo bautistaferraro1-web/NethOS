@@ -6,6 +6,7 @@
 #include "vmm.h"
 #include "mem.h"
 #include "console.h"
+#include "cpu.h"
 
 #define NVME_REG_CAP       0x0000
 #define NVME_REG_VS        0x0008
@@ -59,6 +60,14 @@ struct nvme_queue {
 
 static volatile uint8_t *nvme_regs;
 static uint32_t nvme_stride;
+
+/* Estado persistente del dispositivo una vez inicializado. */
+static struct nvme_queue nvme_adminq;
+static struct nvme_queue nvme_ioq;
+static uint64_t nvme_sector_count;
+static uint64_t nvme_data_phys;
+static uint32_t nvme_sector_size;
+static int nvme_ready;
 
 static uint32_t reg_read32(uint32_t off)
 {
@@ -313,14 +322,15 @@ void nvme_init(void)
     uint64_t iosq_phys = dma[4];
     uint64_t iocq_phys = dma[5];
     uint64_t data_phys = dma[6];
+    nvme_data_phys = data_phys;
 
     /* Deshabilitar antes de programar las colas administrativas. */
     reg_write32(NVME_REG_CC, 0);
     if (wait_ready(0) != 0)
         return;
 
-    struct nvme_queue admin;
-    queue_init(&admin, asq_phys, acq_phys, depth, NVME_ADMIN_QID);
+    struct nvme_queue *admin = &nvme_adminq;
+    queue_init(admin, asq_phys, acq_phys, depth, NVME_ADMIN_QID);
 
     reg_write32(NVME_REG_AQA,
         ((uint32_t)(depth - 1) << 16) | (uint32_t)(depth - 1));
@@ -342,11 +352,11 @@ void nvme_init(void)
     struct nvme_command cmd;
 
     /* Identify Controller, CNS=1. */
-    command_init(&admin, &cmd, NVME_OP_IDENTIFY, 0);
+    command_init(admin, &cmd, NVME_OP_IDENTIFY, 0);
     command_prp1(&cmd, identify_ctrl_phys);
     cmd.dw[10] = 1;
 
-    if (submit(&admin, &cmd) != 0) {
+    if (submit(admin, &cmd) != 0) {
         console_puts("NVMe: Identify Controller fallo\n");
         return;
     }
@@ -366,11 +376,11 @@ void nvme_init(void)
     console_putc('\n');
 
     /* Identify Namespace 1, CNS=0. */
-    command_init(&admin, &cmd, NVME_OP_IDENTIFY, 1);
+    command_init(admin, &cmd, NVME_OP_IDENTIFY, 1);
     command_prp1(&cmd, identify_ns_phys);
     cmd.dw[10] = 0;
 
-    if (submit(&admin, &cmd) != 0) {
+    if (submit(admin, &cmd) != 0) {
         console_puts("NVMe: Identify Namespace fallo\n");
         return;
     }
@@ -404,38 +414,43 @@ void nvme_init(void)
         return;
     }
 
-    /* Crear CQ y SQ de I/O físicamente contiguas. */
-    struct nvme_queue ioq;
-    queue_init(&ioq, iosq_phys, iocq_phys, depth, NVME_IO_QID);
+    nvme_sector_count = sectors;
+    nvme_sector_size = sector_size;
 
-    command_init(&admin, &cmd, NVME_OP_CREATE_CQ, 0);
+    /* Crear CQ y SQ de I/O físicamente contiguas. */
+    queue_init(&nvme_ioq, iosq_phys, iocq_phys, depth, NVME_IO_QID);
+
+    command_init(admin, &cmd, NVME_OP_CREATE_CQ, 0);
     command_prp1(&cmd, iocq_phys);
     cmd.dw[10] = ((uint32_t)(depth - 1) << 16) | NVME_IO_QID;
     cmd.dw[11] = 1u;  /* PC=1, interrupciones deshabilitadas */
 
-    if (submit(&admin, &cmd) != 0) {
+    if (submit(admin, &cmd) != 0) {
         console_puts("NVMe: Create I/O CQ fallo\n");
         return;
     }
 
-    command_init(&admin, &cmd, NVME_OP_CREATE_SQ, 0);
+    command_init(admin, &cmd, NVME_OP_CREATE_SQ, 0);
     command_prp1(&cmd, iosq_phys);
     cmd.dw[10] = ((uint32_t)(depth - 1) << 16) | NVME_IO_QID;
     cmd.dw[11] = (1u << 16) | 1u; /* CQID=1, PC=1 */
 
-    if (submit(&admin, &cmd) != 0) {
+    if (submit(admin, &cmd) != 0) {
         console_puts("NVMe: Create I/O SQ fallo\n");
         return;
     }
 
+    /* La cola de I/O está lista para usar la API pública. */
+    nvme_ready = 1;
+
     /* Read de un bloque lógico en SLBA=0. NLB=0 significa un bloque. */
-    command_init(&ioq, &cmd, NVME_OP_READ, 1);
+    command_init(&nvme_ioq, &cmd, NVME_OP_READ, 1);
     command_prp1(&cmd, data_phys);
     cmd.dw[10] = 0;
     cmd.dw[11] = 0;
     cmd.dw[12] = 0;
 
-    if (submit(&ioq, &cmd) != 0) {
+    if (submit(&nvme_ioq, &cmd) != 0) {
         console_puts("NVMe: lectura de LBA 0 fallo\n");
         return;
     }
@@ -463,4 +478,115 @@ void nvme_init(void)
             console_putc(i == 15 ? '\n' : ' ');
         }
     }
+
+#ifdef NVME_TEST_WRITES
+    nvme_selftest_write();
+#endif
 }
+
+
+static int nvme_rw_blocks(uint64_t lba, uint32_t count,
+                          void *buffer, int is_write)
+{
+    uint64_t irq_flags = irq_save();
+    int result = -1;
+
+    if (!nvme_ready || !buffer || !count || !nvme_sector_size)
+        goto out;
+
+    if (lba >= nvme_sector_count ||
+        (uint64_t)count > nvme_sector_count - lba)
+        goto out;
+
+    if ((uint64_t)count * nvme_sector_size > NVME_PAGE_SIZE)
+        goto out;
+
+    uint64_t bytes = (uint64_t)count * nvme_sector_size;
+    volatile uint8_t *dma =
+        (volatile uint8_t *)P2V(nvme_data_phys);
+    uint8_t *buf = (uint8_t *)buffer;
+
+    if (is_write) {
+        for (uint64_t i = 0; i < bytes; i++)
+            dma[i] = buf[i];
+        nvme_fence();
+    }
+
+    struct nvme_command cmd;
+    command_init(&nvme_ioq, &cmd,
+                 is_write ? 0x01u : NVME_OP_READ, 1);
+    command_prp1(&cmd, nvme_data_phys);
+    cmd.dw[10] = (uint32_t)lba;
+    cmd.dw[11] = (uint32_t)(lba >> 32);
+    cmd.dw[12] = count - 1u;
+
+    if (submit(&nvme_ioq, &cmd) != 0)
+        goto out;
+
+    if (!is_write) {
+        nvme_fence();
+        for (uint64_t i = 0; i < bytes; i++)
+            buf[i] = dma[i];
+    }
+
+    result = 0;
+
+out:
+    irq_restore(irq_flags);
+    return result;
+}
+
+int nvme_read_blocks(uint64_t lba, uint32_t count, void *buffer)
+{
+    return nvme_rw_blocks(lba, count, buffer, 0);
+}
+
+int nvme_write_blocks(uint64_t lba, uint32_t count, const void *buffer)
+{
+    return nvme_rw_blocks(lba, count, (void *)buffer, 1);
+}
+
+#ifdef NVME_TEST_WRITES
+void nvme_selftest_write(void)
+{
+    static uint8_t expected[NVME_PAGE_SIZE];
+    static uint8_t actual[NVME_PAGE_SIZE];
+
+    if (!nvme_ready || nvme_sector_count <= 8 ||
+        !nvme_sector_size || nvme_sector_size > sizeof(expected)) {
+        console_puts("NVMe TEST WRITE: no se puede probar\n");
+        return;
+    }
+
+    /*
+     * Esta prueba solo debe compilarse al usar el disco virtual desechable
+     * de QEMU. LBA 8 está después de la firma de prueba de LBA 0.
+     */
+    for (uint32_t i = 0; i < nvme_sector_size; i++)
+        expected[i] = (uint8_t)(i * 37u + 11u);
+
+    console_puts("NVMe TEST WRITE: probando LBA 8 en disco virtual...\n");
+
+    if (nvme_write_blocks(8, 1, expected) != 0) {
+        console_puts("NVMe TEST WRITE: escritura FALLIDA\n");
+        return;
+    }
+
+    for (uint32_t i = 0; i < nvme_sector_size; i++)
+        actual[i] = 0;
+
+    if (nvme_read_blocks(8, 1, actual) != 0) {
+        console_puts("NVMe TEST WRITE: lectura posterior FALLIDA\n");
+        return;
+    }
+
+    for (uint32_t i = 0; i < nvme_sector_size; i++) {
+        if (actual[i] != expected[i]) {
+            console_puts("NVMe TEST WRITE: comparacion FALLIDA\n");
+            return;
+        }
+    }
+
+    console_puts("NVMe TEST WRITE: write/read LBA 8 OK\n");
+}
+#endif
