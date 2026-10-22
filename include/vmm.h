@@ -5,6 +5,8 @@
 #define VMM_PRESENT 0x001ULL
 #define VMM_WRITE   0x002ULL
 #define VMM_USER    0x004ULL
+#define VMM_PWT     0x008ULL
+#define VMM_PCD     0x010ULL
 #define VMM_HUGE    0x080ULL
 
 void vmm_init(void);

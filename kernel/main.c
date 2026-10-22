@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include "console.h"
 #include "pmm.h"
+#include "pci.h"
+#include "nvme.h"
 #include "idt.h"
 #include "heap.h"
 #include "vmm.h"
@@ -146,6 +148,9 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
     } else {
         console_puts("Framebuffer no disponible; usando VGA/COM1\n");
     }
+
+    pci_init();
+    nvme_init();
 
     vmm_selftest();
 
