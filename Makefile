@@ -141,7 +141,29 @@ build/initramfs.o: kernel/initramfs.c include/initramfs.h include/file.h
 >mkdir -p build
 >gcc -std=gnu11 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -fno-tree-loop-distribute-patterns -Wall -Wextra -Iinclude -c kernel/initramfs.c -o build/initramfs.o
 
-build/initramfs.cpio: $(shell find initrd \( -type f -o -type l \)) Makefile
+build/reboot.o: user/reboot.c user/nlib.h Makefile
+> mkdir -p build
+> gcc -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-stack-protector -mgeneral-regs-only -fno-tree-loop-distribute-patterns -Wall -Wextra -Iinclude -c user/reboot.c -o build/reboot.o
+
+build/reboot.elf: build/reboot.o user/user.ld
+> ld -nostdlib -z max-page-size=0x1000 -T user/user.ld -o build/reboot.elf build/reboot.o
+
+initrd/bin/reboot: build/reboot.elf
+> rm -f $@
+> cp $< $@
+
+build/poweroff.o: user/poweroff.c user/nlib.h Makefile
+> mkdir -p build
+> gcc -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-stack-protector -mgeneral-regs-only -fno-tree-loop-distribute-patterns -Wall -Wextra -Iinclude -c user/poweroff.c -o build/poweroff.o
+
+build/poweroff.elf: build/poweroff.o user/user.ld
+> ld -nostdlib -z max-page-size=0x1000 -T user/user.ld -o build/poweroff.elf build/poweroff.o
+
+initrd/bin/poweroff: build/poweroff.elf
+> rm -f $@
+> cp $< $@
+
+build/initramfs.cpio: $(shell find initrd \( -type f -o -type l \)) Makefile initrd/bin/reboot initrd/bin/poweroff
 >mkdir -p build
 >cd initrd && find . -mindepth 1 | cpio -o -H newc --quiet > ../build/initramfs.cpio
 
