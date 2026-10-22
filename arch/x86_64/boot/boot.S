@@ -16,9 +16,9 @@ mb2_header_start:
     .short 5                /* tag: framebuffer */
     .short 0
     .long 20
-    .long 1024              /* ancho */
-    .long 768               /* alto */
-    .long 32                /* bpp */
+    .long 0                 /* cualquier ancho disponible */
+    .long 0                 /* cualquier alto disponible */
+    .long 0                 /* cualquier profundidad disponible */
     .align 8
     .short 0
     .short 0
