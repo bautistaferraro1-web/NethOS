@@ -12,6 +12,7 @@
 #include "file.h"
 #include "initramfs.h"
 #include "tmpfs.h"
+#include "fat32.h"
 #include "pmm.h"
 #include "mem.h"
 #include "timer.h"
@@ -457,7 +458,9 @@ static struct file *open_any(const char *p)
 {
     int e = 0;
     struct file *f = tmpfs_open(p, 0, &e);
-    return f ? f : initramfs_open(p);
+    if (f) return f;
+    f = initramfs_open(p);
+    return f ? f : fat32_open(p);
 }
 
 static uint64_t do_open(uint64_t upath, uint64_t flags)
@@ -471,6 +474,7 @@ static uint64_t do_open(uint64_t upath, uint64_t flags)
     if (!wr) f = open_any(p);
     else {
         if (!tmpfs_exists(p)) {
+            if (fat32_handles_path(p)) return ERR(EROFS);
             struct file *ro = initramfs_open(p);
             if (ro) { file_put(ro); return ERR(EROFS); }   /* el initramfs es solo lectura */
         }
@@ -974,7 +978,7 @@ static uint64_t sys_access(uint64_t upath, uint64_t mode)
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
-    struct file *f = initramfs_open(p);
+    struct file *f = open_any(p);
     if (!f) return ERR(ENOENT);
     file_put(f);
     return 0;

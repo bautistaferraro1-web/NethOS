@@ -4,6 +4,8 @@
 #include "pci.h"
 #include "nvme.h"
 #include "block.h"
+#include "partition.h"
+#include "fat32.h"
 #include "idt.h"
 #include "heap.h"
 #include "vmm.h"
@@ -153,6 +155,8 @@ void kernel_main(uint64_t magic, uint64_t mb2_info)
     pci_init();
     nvme_init();
     block_init();
+    partition_init();
+    fat32_init();
 
     vmm_selftest();
 
