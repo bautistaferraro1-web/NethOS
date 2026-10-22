@@ -225,6 +225,113 @@ static void ansi_sgr(void)
     ansi_count = ansi_value = ansi_have = 0;
 }
 
+
+/* Agrega el último parámetro CSI antes de ejecutar el comando. */
+static void ansi_finish_params(void)
+{
+    if (ansi_have || ansi_count > 0) {
+        if (ansi_count < 8)
+            ansi_params[ansi_count++] = ansi_have ? ansi_value : 0;
+    }
+    ansi_value = ansi_have = 0;
+}
+
+static int ansi_param(int i, int fallback)
+{
+    return (i < ansi_count && ansi_params[i] != 0)
+        ? ansi_params[i] : fallback;
+}
+
+static void ansi_erase_line(int mode)
+{
+    int cols = fb_active ? fb_cols : W;
+    int rows = fb_active ? fb_rows : H;
+
+    if (cy < 0 || cy >= rows)
+        return;
+
+    int first = 0;
+    int last = cols;
+
+    if (mode == 0) {
+        first = cx;
+    } else if (mode == 1) {
+        last = cx + 1;
+    } else if (mode != 2) {
+        return;
+    }
+
+    if (first < 0) first = 0;
+    if (first > cols) first = cols;
+    if (last < 0) last = 0;
+    if (last > cols) last = cols;
+
+    for (int x = first; x < last; x++) {
+        if (fb_active)
+            fb_cell(x, cy, ' ');
+        else
+            VGA[cy * W + x] = ((uint16_t)color << 8) | ' ';
+    }
+}
+
+static void ansi_dispatch(char final)
+{
+    ansi_finish_params();
+
+    int cols = fb_active ? fb_cols : W;
+    int rows = fb_active ? fb_rows : H;
+
+    switch (final) {
+    case 'H':
+    case 'f': {
+        int row = ansi_param(0, 1);
+        int col = ansi_param(1, 1);
+
+        if (row < 1) row = 1;
+        if (col < 1) col = 1;
+        if (row > rows) row = rows;
+        if (col > cols) col = cols;
+
+        cy = row - 1;
+        cx = col - 1;
+        break;
+    }
+
+    case 'J': {
+        int mode = ansi_param(0, 0);
+
+        if (mode == 2) {
+            console_clear();
+        } else if (mode == 0 || mode == 1) {
+            int pos = cy * cols + cx;
+            int total = rows * cols;
+            int first = (mode == 0) ? pos : 0;
+            int last = (mode == 0) ? total : pos + 1;
+
+            for (int i = first; i < last; i++) {
+                int x = i % cols;
+                int y = i / cols;
+
+                if (fb_active)
+                    fb_cell(x, y, ' ');
+                else
+                    VGA[y * W + x] = ((uint16_t)color << 8) | ' ';
+            }
+        }
+        break;
+    }
+
+    case 'K':
+        ansi_erase_line(ansi_param(0, 0));
+        break;
+
+    default:
+        break;
+    }
+
+    ansi_count = ansi_value = ansi_have = 0;
+}
+
 static void putc_raw(char c)
 {
     if (ansi_state == 1) {
@@ -245,7 +352,14 @@ static void putc_raw(char c)
             ansi_value = ansi_have = 0;
             return;
         }
-        if (c == 'm') ansi_sgr();
+        if (c == 'm') {
+            ansi_sgr();
+        } else if (c == 'H' || c == 'f' ||
+                   c == 'J' || c == 'K') {
+            ansi_dispatch(c);
+        } else {
+            ansi_count = ansi_value = ansi_have = 0;
+        }
         ansi_state = 0;
         return;
     }
