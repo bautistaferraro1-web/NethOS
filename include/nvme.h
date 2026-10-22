@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 void nvme_init(void);
+int nvme_get_info(uint64_t *sector_count, uint32_t *sector_size);
 
 /*
  * API del kernel. count se expresa en bloques lógicos.

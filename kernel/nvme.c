@@ -628,3 +628,14 @@ static void nvme_selftest_persist(void)
     console_puts("NVMe TEST PERSIST: datos conservados; lectura OK\n");
 }
 #endif
+
+int nvme_get_info(uint64_t *sector_count, uint32_t *sector_size)
+{
+    if (!nvme_ready || !nvme_sector_count || !nvme_sector_size ||
+        !sector_count || !sector_size)
+        return -1;
+
+    *sector_count = nvme_sector_count;
+    *sector_size = nvme_sector_size;
+    return 0;
+}
