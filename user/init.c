@@ -72,6 +72,13 @@ static void login(void)
 {
     static char user[64], home[64], shell[64];
     static char e_home[80], e_user[80], e_shell[80];
+    /* Crear una sesión propia antes de entregar la consola interactiva a Bash. */
+    long sid = sys3(112, 0, 0, 0);            /* setsid */
+    if (sid < 0) {
+        print("login: setsid fallo\n");
+        return;
+    }
+
     sys3(16, 0, 0x5F01, 1);                 /* consola cocinada, y esta tarea pasa a ser la duena */
     show_file("/etc/issue");
     for (;;) {
