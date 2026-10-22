@@ -163,6 +163,77 @@ static void scroll(void)
     cy = H - 1;
 }
 
+/* Desplaza la pantalla en filas de texto sin modificar la posición del cursor. */
+static void ansi_scroll_screen(int lines)
+{
+    int cols = fb_active ? fb_cols : W;
+    int rows = fb_active ? fb_rows : H;
+
+    if (lines == 0 || rows <= 0 || cols <= 0)
+        return;
+
+    if (lines > rows) lines = rows;
+    if (lines < -rows) lines = -rows;
+
+    if (fb_active) {
+        int pixels = lines * 16;
+        int height = (int)fb_height;
+        uint32_t bg = fb_pal(color >> 4);
+
+        if (pixels > height) pixels = height;
+        if (pixels < -height) pixels = -height;
+
+        if (pixels > 0) {
+            for (int y = 0; y < height - pixels; y++) {
+                volatile uint32_t *d = (volatile uint32_t *)
+                    ((volatile uint8_t *)fb_pixels + (uint64_t)y * fb_pitch);
+                volatile uint32_t *src = (volatile uint32_t *)
+                    ((volatile uint8_t *)fb_pixels + (uint64_t)(y + pixels) * fb_pitch);
+                for (uint32_t x = 0; x < fb_width; x++) d[x] = src[x];
+            }
+            for (int y = height - pixels; y < height; y++) {
+                volatile uint32_t *d = (volatile uint32_t *)
+                    ((volatile uint8_t *)fb_pixels + (uint64_t)y * fb_pitch);
+                for (uint32_t x = 0; x < fb_width; x++) d[x] = bg;
+            }
+        } else {
+            pixels = -pixels;
+            for (int y = height - 1; y >= pixels; y--) {
+                volatile uint32_t *d = (volatile uint32_t *)
+                    ((volatile uint8_t *)fb_pixels + (uint64_t)y * fb_pitch);
+                volatile uint32_t *src = (volatile uint32_t *)
+                    ((volatile uint8_t *)fb_pixels + (uint64_t)(y - pixels) * fb_pitch);
+                for (uint32_t x = 0; x < fb_width; x++) d[x] = src[x];
+            }
+            for (int y = 0; y < pixels; y++) {
+                volatile uint32_t *d = (volatile uint32_t *)
+                    ((volatile uint8_t *)fb_pixels + (uint64_t)y * fb_pitch);
+                for (uint32_t x = 0; x < fb_width; x++) d[x] = bg;
+            }
+        }
+        return;
+    }
+
+    if (lines > 0) {
+        for (int y = 0; y < rows - lines; y++)
+            for (int x = 0; x < cols; x++)
+                VGA[y * W + x] = VGA[(y + lines) * W + x];
+
+        for (int y = rows - lines; y < rows; y++)
+            for (int x = 0; x < cols; x++)
+                VGA[y * W + x] = ((uint16_t)color << 8) | ' ';
+    } else {
+        lines = -lines;
+        for (int y = rows - 1; y >= lines; y--)
+            for (int x = 0; x < cols; x++)
+                VGA[y * W + x] = VGA[(y - lines) * W + x];
+
+        for (int y = 0; y < lines; y++)
+            for (int x = 0; x < cols; x++)
+                VGA[y * W + x] = ((uint16_t)color << 8) | ' ';
+    }
+}
+
 void console_clear(void)
 {
     if (fb_active) fb_fill();
@@ -353,6 +424,14 @@ static void ansi_dispatch(char final)
         ansi_erase_line(ansi_param(0, 0));
         break;
 
+    case 'S':
+        ansi_scroll_screen(ansi_param(0, 1));
+        break;
+
+    case 'T':
+        ansi_scroll_screen(-ansi_param(0, 1));
+        break;
+
     default:
         break;
     }
@@ -382,8 +461,9 @@ static void putc_raw(char c)
         }
         if (c == 'm') {
             ansi_sgr();
-        } else if (c == 'H' || c == 'f' ||
-                   c == 'J' || c == 'K') {
+        } else if (c == 'H' || c == 'f' || c == 'J' || c == 'K' ||
+                   c == 'A' || c == 'B' || c == 'C' || c == 'D' ||
+                   c == 'S' || c == 'T') {
             ansi_dispatch(c);
         } else {
             ansi_count = ansi_value = ansi_have = 0;
