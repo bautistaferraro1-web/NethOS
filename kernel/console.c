@@ -297,6 +297,34 @@ static void ansi_dispatch(char final)
         break;
     }
 
+    case 'A': {
+        int n = ansi_param(0, 1);
+        cy -= n;
+        if (cy < 0) cy = 0;
+        break;
+    }
+
+    case 'B': {
+        int n = ansi_param(0, 1);
+        cy += n;
+        if (cy >= rows) cy = rows - 1;
+        break;
+    }
+
+    case 'C': {
+        int n = ansi_param(0, 1);
+        cx += n;
+        if (cx >= cols) cx = cols - 1;
+        break;
+    }
+
+    case 'D': {
+        int n = ansi_param(0, 1);
+        cx -= n;
+        if (cx < 0) cx = 0;
+        break;
+    }
+
     case 'J': {
         int mode = ansi_param(0, 0);
 
