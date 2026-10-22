@@ -128,9 +128,9 @@ static int64_t con_ioctl(struct file *f, uint64_t req, uint64_t arg)
         for (int i = 0; i < KTERMIOS_SIZE; i++) d[i] = ((const uint8_t *)arg)[i];
         return 0;
     }
-    if (req == 0x5413) {                                     /* TIOCGWINSZ: texto VGA 80x25 */
+    if (req == 0x5413) { /* TIOCGWINSZ */
         uint16_t *w = (uint16_t *)arg;
-        w[0] = 25; w[1] = 80; w[2] = 0; w[3] = 0;
+        console_get_size(&w[0], &w[1], &w[2], &w[3]);
         return 0;
     }
     if (req == 0x802C542A) {                       /* TCGETS2: termios2, 44 bytes */

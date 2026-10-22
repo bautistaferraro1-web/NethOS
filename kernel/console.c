@@ -575,3 +575,12 @@ void console_putc(char c)
     putc_raw(c);
     irq_restore(f);
 }
+
+void console_get_size(uint16_t *rows, uint16_t *cols,
+                      uint16_t *xpixel, uint16_t *ypixel)
+{
+    if (rows)   *rows   = (uint16_t)(fb_active ? fb_rows : H);
+    if (cols)   *cols   = (uint16_t)(fb_active ? fb_cols : W);
+    if (xpixel) *xpixel = (uint16_t)(fb_active ? fb_width : 0);
+    if (ypixel) *ypixel = (uint16_t)(fb_active ? fb_height : 0);
+}
