@@ -4,12 +4,20 @@
 #include "block.h"
 #include "partition.h"
 #include "console.h"
+#include "cpu.h"
 
 #define FAT_SECTOR_MAX 4096u
 #define FAT_OPEN_MAX   32u
 #define FAT_EOC_MIN    0x0FFFFFF8u
 #define FAT_BAD        0x0FFFFFF7u
 #define FAT_NAME_MAX   13u
+#define FAT_O_ACCMODE  3
+#define FAT_O_WRONLY   1
+#define FAT_O_RDWR     2
+#define FAT_O_CREAT    0100
+#define FAT_O_EXCL     0200
+#define FAT_O_TRUNC    01000
+#define FAT_O_APPEND   02000
 
 struct fat_volume {
     int mounted;
@@ -26,17 +34,23 @@ struct fat_volume {
     uint64_t total_sectors;
     uint64_t fat_start;
     uint64_t data_start;
+    uint32_t active_fat;
+    int fat_mirroring;
 };
 
 struct fat_node {
     uint32_t cluster;
     uint32_t size;
     uint8_t attr;
+    uint64_t entry_lba;
+    uint16_t entry_offset;
+    uint32_t parent_cluster;
 };
 
 struct fat_handle {
     struct file file;
     int used;
+    int flags;
     struct fat_node node;
 };
 
@@ -245,6 +259,9 @@ static int find_child(uint32_t directory, const char *wanted,
 
                 if (name_equal(name, wanted)) {
                     node_from_entry(e, result);
+                    result->entry_lba = lba;
+                    result->entry_offset = (uint16_t)off;
+                    result->parent_cluster = directory;
                     return 1;
                 }
             }
@@ -556,6 +573,499 @@ static int64_t fat_getdents(struct file *file, void *buffer, uint64_t count)
     }
 }
 
+
+#ifdef FAT32_ENABLE_WRITES
+
+#define FAT_EOC_VALUE 0x0FFFFFFFu
+#define FAT_ERR_EIO   5
+#define FAT_ERR_EINVAL 22
+#define FAT_ERR_ENOSPC 28
+#define FAT_ERR_EFBIG 27
+#define FAT_ERR_ENOTSUP 95
+
+static void put_le16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+}
+
+static void put_le32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static int write_sector(uint64_t relative, const uint8_t *buffer)
+{
+    if (!vol.mounted || relative >= vol.total_sectors ||
+        vol.start_lba > UINT64_MAX - relative)
+        return -1;
+
+    return block_write(vol.device, vol.start_lba + relative,
+                       1, buffer);
+}
+
+/* Actualiza la entrada FAT en las copias que corresponda. */
+static int set_fat_entry(uint32_t cluster, uint32_t value)
+{
+    if (!valid_cluster(cluster))
+        return -1;
+
+    uint64_t byte_offset = (uint64_t)cluster * 4;
+    uint64_t sector_index = byte_offset / vol.sector_size;
+    uint32_t byte_index = (uint32_t)(byte_offset % vol.sector_size);
+
+    if (sector_index >= vol.fat_size)
+        return -1;
+
+    uint32_t first = vol.fat_mirroring ? 0 : vol.active_fat;
+    uint32_t end = vol.fat_mirroring ? vol.fats : vol.active_fat + 1;
+    uint8_t sector[FAT_SECTOR_MAX];
+
+    for (uint32_t f = first; f < end; f++) {
+        uint64_t lba = (uint64_t)vol.reserved_sectors
+                     + (uint64_t)f * vol.fat_size + sector_index;
+
+        if (read_sector(lba, sector) != 0)
+            return -1;
+
+        uint32_t old = le32(sector + byte_index);
+        uint32_t updated = (old & 0xF0000000u)
+                         | (value & 0x0FFFFFFFu);
+
+        put_le32(sector + byte_index, updated);
+
+        if (write_sector(lba, sector) != 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+/* Reserva una entrada libre y pone a cero todos los sectores del cluster. */
+static int allocate_cluster(uint32_t *allocated)
+{
+    uint8_t fat_sector[FAT_SECTOR_MAX];
+    uint8_t zero[FAT_SECTOR_MAX];
+
+    zero_bytes(zero, vol.sector_size);
+
+    uint32_t entries_per_sector = vol.sector_size / 4;
+
+    for (uint32_t s = 0; s < vol.fat_size; s++) {
+        if (read_sector(vol.fat_start + s, fat_sector) != 0)
+            return -1;
+
+        for (uint32_t i = 0; i < entries_per_sector; i++) {
+            uint64_t candidate64 = (uint64_t)s * entries_per_sector + i;
+
+            if (candidate64 < 2 ||
+                candidate64 > (uint64_t)vol.cluster_count + 1)
+                continue;
+
+            uint32_t candidate = (uint32_t)candidate64;
+
+            if ((le32(fat_sector + i * 4) & 0x0FFFFFFFu) != 0)
+                continue;
+
+            if (set_fat_entry(candidate, FAT_EOC_VALUE) != 0)
+                return -1;
+
+            uint64_t start =
+                vol.data_start +
+                (uint64_t)(candidate - 2) * vol.sectors_per_cluster;
+
+            for (uint32_t j = 0; j < vol.sectors_per_cluster; j++) {
+                if (write_sector(start + j, zero) != 0) {
+                    (void)set_fat_entry(candidate, 0);
+                    return -1;
+                }
+            }
+
+            *allocated = candidate;
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+/* Amplia la cadena hasta que contenga al menos "needed" clusters. */
+static int ensure_clusters(struct fat_node *node, uint64_t needed)
+{
+    if (!needed)
+        return 0;
+
+    if (!node->cluster) {
+        if (allocate_cluster(&node->cluster) != 0)
+            return -1;
+    }
+
+    uint32_t current = node->cluster;
+
+    for (uint64_t count = 1; count < needed; count++) {
+        uint32_t next;
+        int rc = next_cluster(current, &next);
+
+        if (rc == 0) {
+            current = next;
+            continue;
+        }
+
+        if (rc < 0)
+            return -1;
+
+        uint32_t fresh;
+        if (allocate_cluster(&fresh) != 0)
+            return -1;
+
+        if (set_fat_entry(current, fresh) != 0) {
+            (void)set_fat_entry(fresh, 0);
+            return -1;
+        }
+
+        current = fresh;
+    }
+
+    return 0;
+}
+
+/* Persiste cluster inicial y tamaño sin alterar el resto de la entrada. */
+static int persist_node(struct fat_node *node)
+{
+    uint8_t sector[FAT_SECTOR_MAX];
+
+    if (node->entry_offset > vol.sector_size - 32 ||
+        (node->entry_offset & 31u) != 0 ||
+        read_sector(node->entry_lba, sector) != 0)
+        return -1;
+
+    uint8_t *e = sector + node->entry_offset;
+
+    if (e[0] == 0 || e[0] == 0xE5 || e[11] == 0x0F)
+        return -1;
+
+    put_le16(e + 20, (uint16_t)(node->cluster >> 16));
+    put_le16(e + 26, (uint16_t)node->cluster);
+    put_le32(e + 28, node->size);
+
+    return write_sector(node->entry_lba, sector);
+}
+
+/* Libera una cadena completa, frenando ante ciclos o entradas inválidas. */
+static int free_chain(uint32_t cluster)
+{
+    for (uint32_t step = 0; step < vol.cluster_count; step++) {
+        uint32_t next;
+        int rc = next_cluster(cluster, &next);
+
+        if (rc < 0)
+            return -1;
+
+        if (set_fat_entry(cluster, 0) != 0)
+            return -1;
+
+        if (rc == 1)
+            return 0;
+
+        cluster = next;
+    }
+
+    return -1;
+}
+
+/*
+ * Truncado seguro frente a una interrupción: primero se desconecta
+ * la cadena del archivo; luego se liberan los clusters antiguos.
+ * Un fallo puede dejar clusters perdidos, pero evita que el archivo
+ * siga apuntando a clusters que ya se hayan marcado como libres.
+ */
+static int truncate_node(struct fat_node *node)
+{
+    uint32_t old_cluster = node->cluster;
+    uint32_t old_size = node->size;
+
+    node->cluster = 0;
+    node->size = 0;
+
+    if (persist_node(node) != 0) {
+        node->cluster = old_cluster;
+        node->size = old_size;
+        return -1;
+    }
+
+    if (old_cluster && free_chain(old_cluster) != 0)
+        return -1;
+
+    return 0;
+}
+
+/* Acepta nombres 8.3 sencillos: NAME.TXT, TEST, KERNEL.ELF. */
+static int encode_short_name(const char *name, uint8_t out[11])
+{
+    for (uint32_t i = 0; i < 11; i++)
+        out[i] = ' ';
+
+    uint32_t base = 0, ext = 0;
+    int dot = 0;
+
+    for (const char *p = name; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+
+        if (c == '.') {
+            if (dot || base == 0) return -1;
+            dot = 1;
+            continue;
+        }
+
+        if (c <= 32 || c >= 127 ||
+            c == '"' || c == '*' || c == '+' || c == ',' ||
+            c == '/' || c == ':' || c == ';' || c == '<' ||
+            c == '=' || c == '>' || c == '?' || c == '[' ||
+            c == '\\' || c == ']' || c == '|')
+            return -1;
+
+        if (c >= 'a' && c <= 'z')
+            c = (unsigned char)(c - 'a' + 'A');
+
+        if (!dot) {
+            if (base >= 8) return -1;
+            out[base++] = c;
+        } else {
+            if (ext >= 3) return -1;
+            out[8 + ext++] = c;
+        }
+    }
+
+    return base ? 0 : -1;
+}
+
+/* Busca una entrada disponible en la cadena del directorio raíz. */
+static int find_free_root_slot(uint64_t *slot_lba, uint16_t *slot_offset)
+{
+    uint8_t sector[FAT_SECTOR_MAX];
+    uint32_t cluster = vol.root_cluster;
+
+    for (uint32_t step = 0; step < vol.cluster_count; step++) {
+        for (uint32_t s = 0; s < vol.sectors_per_cluster; s++) {
+            uint64_t lba;
+
+            if (cluster_sector(cluster, s, &lba) != 0 ||
+                read_sector(lba, sector) != 0)
+                return -1;
+
+            for (uint32_t off = 0; off < vol.sector_size; off += 32) {
+                if (sector[off] == 0 || sector[off] == 0xE5) {
+                    *slot_lba = lba;
+                    *slot_offset = (uint16_t)off;
+                    return 0;
+                }
+            }
+        }
+
+        uint32_t next;
+        int rc = next_cluster(cluster, &next);
+
+        if (rc == 1)
+            return -1;
+        if (rc != 0)
+            return -1;
+
+        cluster = next;
+    }
+
+    return -1;
+}
+
+/* Por ahora se crean archivos nuevos únicamente en la raíz de /disk. */
+static int create_root_file(const char *path, struct fat_node *node)
+{
+    const char *relative;
+    uint8_t shortname[11];
+    uint8_t sector[FAT_SECTOR_MAX];
+    uint8_t entry[32];
+
+    if (!disk_path(path, &relative) || !*relative)
+        return 21; /* EISDIR */
+
+    for (const char *p = relative; *p; p++)
+        if (*p == '/')
+            return FAT_ERR_ENOTSUP;
+
+    if (encode_short_name(relative, shortname) != 0)
+        return FAT_ERR_EINVAL;
+
+    struct fat_node existing;
+    int found = find_child(vol.root_cluster, relative, &existing);
+
+    if (found == 1)
+        return 17; /* EEXIST */
+    if (found < 0)
+        return FAT_ERR_EIO;
+
+    uint64_t slot_lba;
+    uint16_t slot_offset;
+
+    if (find_free_root_slot(&slot_lba, &slot_offset) != 0)
+        return FAT_ERR_ENOSPC;
+
+    if (read_sector(slot_lba, sector) != 0)
+        return FAT_ERR_EIO;
+
+    zero_bytes(entry, sizeof(entry));
+    copy_bytes(entry, shortname, sizeof(shortname));
+
+    entry[11] = 0x20; /* archivo normal */
+    put_le16(entry + 16, 0x0021); /* fecha DOS mínima: 1980-01-01 */
+    put_le16(entry + 18, 0x0021);
+    put_le16(entry + 24, 0x0021);
+
+    copy_bytes(sector + slot_offset, entry, sizeof(entry));
+
+    if (write_sector(slot_lba, sector) != 0)
+        return FAT_ERR_EIO;
+
+    node->cluster = 0;
+    node->size = 0;
+    node->attr = 0x20;
+    node->entry_lba = slot_lba;
+    node->entry_offset = slot_offset;
+    node->parent_cluster = vol.root_cluster;
+
+    return 0;
+}
+
+#endif /* FAT32_ENABLE_WRITES */
+
+static int64_t fat_write(struct file *file, const void *buffer,
+                         uint64_t count)
+{
+#ifndef FAT32_ENABLE_WRITES
+    (void)file;
+    (void)buffer;
+    (void)count;
+    return -30; /* EROFS: escritura deshabilitada en la compilación normal */
+#else
+    struct fat_handle *h = file->priv;
+    int64_t result = -FAT_ERR_EIO;
+    uint64_t irq_flags = irq_save();
+
+    if (!h || !(h->flags & FAT_O_ACCMODE)) {
+        result = -9; /* EBADF */
+        goto out;
+    }
+
+    if (!count) {
+        result = 0;
+        goto out;
+    }
+
+    if (!buffer || (h->node.attr & 0x10)) {
+        result = -21; /* EISDIR */
+        goto out;
+    }
+
+    if (h->flags & FAT_O_APPEND)
+        file->off = h->node.size;
+
+    if (file->off > h->node.size) {
+        result = -FAT_ERR_EINVAL; /* No admitimos huecos dispersos todavía. */
+        goto out;
+    }
+
+    if (file->off > UINT32_MAX ||
+        count > UINT32_MAX - file->off) {
+        result = -FAT_ERR_EFBIG;
+        goto out;
+    }
+
+    uint64_t start = file->off;
+    uint64_t end = start + count;
+    uint64_t cluster_bytes =
+        (uint64_t)vol.sectors_per_cluster * vol.sector_size;
+    uint64_t required = (end + cluster_bytes - 1) / cluster_bytes;
+
+    if (ensure_clusters(&h->node, required) != 0) {
+        result = -FAT_ERR_ENOSPC;
+        goto out;
+    }
+
+    uint32_t cluster = h->node.cluster;
+    uint64_t skip = start / cluster_bytes;
+
+    for (uint64_t i = 0; i < skip; i++) {
+        uint32_t next;
+        if (next_cluster(cluster, &next) != 0) {
+            result = -FAT_ERR_EIO;
+            goto out;
+        }
+        cluster = next;
+    }
+
+    const uint8_t *src = buffer;
+    uint8_t sector[FAT_SECTOR_MAX];
+    uint64_t done = 0;
+    uint64_t position = start;
+
+    while (done < count) {
+        uint64_t in_cluster = position % cluster_bytes;
+        uint32_t sector_in_cluster =
+            (uint32_t)(in_cluster / vol.sector_size);
+        uint32_t sector_offset =
+            (uint32_t)(in_cluster % vol.sector_size);
+        uint64_t lba;
+
+        if (cluster_sector(cluster, sector_in_cluster, &lba) != 0 ||
+            read_sector(lba, sector) != 0) {
+            result = done ? (int64_t)done : -FAT_ERR_EIO;
+            goto out;
+        }
+
+        uint64_t part = vol.sector_size - sector_offset;
+        uint64_t left_cluster = cluster_bytes - in_cluster;
+
+        if (part > left_cluster) part = left_cluster;
+        if (part > count - done) part = count - done;
+
+        copy_bytes(sector + sector_offset, src + done, (uint32_t)part);
+
+        if (write_sector(lba, sector) != 0) {
+            result = done ? (int64_t)done : -FAT_ERR_EIO;
+            goto out;
+        }
+
+        done += part;
+        position += part;
+
+        if (done < count && position % cluster_bytes == 0) {
+            uint32_t next;
+            if (next_cluster(cluster, &next) != 0) {
+                result = (int64_t)done;
+                goto out;
+            }
+            cluster = next;
+        }
+    }
+
+    if (end > h->node.size)
+        h->node.size = (uint32_t)end;
+
+    if (persist_node(&h->node) != 0) {
+        result = -FAT_ERR_EIO;
+        goto out;
+    }
+
+    file->off = end;
+    result = (int64_t)done;
+
+out:
+    irq_restore(irq_flags);
+    return result;
+#endif
+}
+
 static int64_t fat_close(struct file *file)
 {
     struct fat_handle *h = file->priv;
@@ -565,20 +1075,86 @@ static int64_t fat_close(struct file *file)
 }
 
 static const struct file_ops fat_ops = {
-    fat_read, 0, 0, fat_stat, fat_lseek, fat_getdents, fat_close
+    fat_read, fat_write, 0, fat_stat, fat_lseek, fat_getdents, fat_close
 };
 
-struct file *fat32_open(const char *path)
+struct file *fat32_open_flags(const char *path, int flags, int *error)
 {
+    if (error)
+        *error = 0;
+
+    if (!vol.mounted) {
+        if (error) *error = 19; /* ENODEV */
+        return 0;
+    }
+
+    int write_access = (flags & FAT_O_ACCMODE) != 0;
+    int create = (flags & FAT_O_CREAT) != 0;
+    int exclusive = (flags & FAT_O_EXCL) != 0;
+    int truncate = (flags & FAT_O_TRUNC) != 0;
     struct fat_node node;
+    int found = resolve_path(path, &node);
 
-    if (!vol.mounted || !resolve_path(path, &node))
+#ifndef FAT32_ENABLE_WRITES
+    if (write_access || create || truncate) {
+        if (error) *error = 30; /* EROFS */
         return 0;
+    }
+#else
+    if ((create || truncate) && !write_access) {
+        if (error) *error = 22; /* EINVAL */
+        return 0;
+    }
+#endif
 
-    if (!(node.attr & 0x10) &&
-        (node.cluster < 2 || !valid_cluster(node.cluster)) &&
-        node.size != 0)
+    if (found) {
+        if (create && exclusive) {
+            if (error) *error = 17; /* EEXIST */
+            return 0;
+        }
+
+        if ((node.attr & 0x10) && (write_access || truncate)) {
+            if (error) *error = 21; /* EISDIR */
+            return 0;
+        }
+
+#ifdef FAT32_ENABLE_WRITES
+        if (truncate) {
+            uint64_t irq_flags = irq_save();
+            int rc = truncate_node(&node);
+            irq_restore(irq_flags);
+
+            if (rc != 0) {
+                if (error) *error = 5; /* EIO */
+                return 0;
+            }
+        }
+#endif
+    } else {
+        if (!create) {
+            if (error) *error = 2; /* ENOENT */
+            return 0;
+        }
+
+#ifndef FAT32_ENABLE_WRITES
+        if (error) *error = 30; /* EROFS */
         return 0;
+#else
+        if (!write_access) {
+            if (error) *error = 22; /* EINVAL */
+            return 0;
+        }
+
+        uint64_t irq_flags = irq_save();
+        int rc = create_root_file(path, &node);
+        irq_restore(irq_flags);
+
+        if (rc != 0) {
+            if (error) *error = rc;
+            return 0;
+        }
+#endif
+    }
 
     for (uint32_t i = 0; i < FAT_OPEN_MAX; i++) {
         struct fat_handle *h = &handles[i];
@@ -587,15 +1163,22 @@ struct file *fat32_open(const char *path)
             continue;
 
         h->used = 1;
+        h->flags = flags;
         h->node = node;
         h->file.ops = &fat_ops;
         h->file.refcount = 1;
-        h->file.off = 0;
+        h->file.off = (flags & FAT_O_APPEND) ? node.size : 0;
         h->file.priv = h;
         return &h->file;
     }
 
+    if (error) *error = 23; /* ENFILE */
     return 0;
+}
+
+struct file *fat32_open(const char *path)
+{
+    return fat32_open_flags(path, 0, 0);
 }
 
 static int try_mount(const struct partition_info *part,
@@ -668,6 +1251,8 @@ static int try_mount(const struct partition_info *part,
     vol.reserved_sectors = reserved;
     vol.fats = fats;
     vol.fat_size = fatsz32;
+    vol.active_fat = active_fat;
+    vol.fat_mirroring = !(ext_flags & 0x80);
     vol.root_cluster = root;
     vol.cluster_count = (uint32_t)clusters;
     vol.start_lba = part->first_lba;
@@ -711,7 +1296,11 @@ void fat32_init(void)
             continue;
 
         if (try_mount(&part, sector_size) == 0) {
+            #ifdef FAT32_ENABLE_WRITES
+            console_puts("FAT32: montado en /disk, ESCRITURA EXPERIMENTAL\n");
+#else
             console_puts("FAT32: montado en /disk, solo lectura\n");
+#endif
             return;
         }
     }

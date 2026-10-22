@@ -471,12 +471,16 @@ static uint64_t do_open(uint64_t upath, uint64_t flags)
     if (r == -2) return ERR(ENAMETOOLONG);
     int wr = (flags & 3) || (flags & 0100) || (flags & 01000);
     struct file *f;
-    if (!wr) f = open_any(p);
-    else {
+    if (!wr) {
+        f = open_any(p);
+    } else if (!tmpfs_exists(p) && fat32_handles_path(p)) {
+        int err = 0;
+        f = fat32_open_flags(p, (int)flags, &err);
+        if (!f) return ERR(err ? err : EROFS);
+    } else {
         if (!tmpfs_exists(p)) {
-            if (fat32_handles_path(p)) return ERR(EROFS);
             struct file *ro = initramfs_open(p);
-            if (ro) { file_put(ro); return ERR(EROFS); }   /* el initramfs es solo lectura */
+            if (ro) { file_put(ro); return ERR(EROFS); }
         }
         int err = 0;
         f = tmpfs_open(p, (int)flags, &err);
