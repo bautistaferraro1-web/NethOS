@@ -38,9 +38,33 @@ static void kbd_irq(void)
     uint8_t sc = inb(0x60);
 
     if (sc == 0xE0) { ext = 1; return; }
-    if (ext) {                               /* extendidas: solo Ctrl derecho */
+    if (ext) {
         ext = 0;
-        if ((sc & 0x7F) == 0x1D) ctrl = !(sc & 0x80);
+        uint8_t code = sc & 0x7F;
+        int released = sc & 0x80;
+
+        /* Ctrl derecho: conservar el estado de la tecla. */
+        if (code == 0x1D) {
+            ctrl = !released;
+            return;
+        }
+
+        /* Las teclas extendidas solo generan entrada al presionarse. */
+        if (released) return;
+
+        switch (code) {
+        case 0x48: push('\x1b'); push('['); push('A'); break; /* Arriba */
+        case 0x50: push('\x1b'); push('['); push('B'); break; /* Abajo */
+        case 0x4D: push('\x1b'); push('['); push('C'); break; /* Derecha */
+        case 0x4B: push('\x1b'); push('['); push('D'); break; /* Izquierda */
+        case 0x47: push('\x1b'); push('['); push('H'); break; /* Inicio */
+        case 0x4F: push('\x1b'); push('['); push('F'); break; /* Fin */
+        case 0x52: push('\x1b'); push('['); push('2'); push('~'); break; /* Insertar */
+        case 0x53: push('\x1b'); push('['); push('3'); push('~'); break; /* Suprimir */
+        case 0x49: push('\x1b'); push('['); push('5'); push('~'); break; /* Re Pág */
+        case 0x51: push('\x1b'); push('['); push('6'); push('~'); break; /* Av Pág */
+        default: break;
+        }
         return;
     }
 
@@ -78,4 +102,10 @@ int keyboard_getc(void)
     char c = buf[tail];
     tail = (tail + 1) % BUF;
     return (unsigned char)c;
+}
+
+/* No consume la entrada: permite comprobar si hay teclas pendientes. */
+int keyboard_has_data(void)
+{
+    return head != tail;
 }

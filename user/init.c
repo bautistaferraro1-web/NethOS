@@ -82,7 +82,7 @@ static void login(void)
     cat2(e_home, "HOME=", home);
     cat2(e_user, "USER=", user);
     cat2(e_shell, "SHELL=", shell);
-    char *envp[] = { e_home, e_user, e_shell, "PATH=/bin", "PS1=\\u@nethra:\\w\\$ ", 0 };
+    char *envp[] = { e_home, e_user, e_shell, "PATH=/bin", "TERM=nethra", "PS1=\\u@nethra:\\w\\$ ", 0 };
     char *av[] = { "bash", "--noprofile", "--norc", 0 };
     sys3(59, (long)shell, (long)av, (long)envp);
     print("login: no pude ejecutar el shell\n");

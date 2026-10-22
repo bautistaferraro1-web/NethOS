@@ -540,6 +540,121 @@ static uint64_t sys_poll(uint64_t ufds, uint64_t nfds, uint64_t timeout)
     return ready;
 }
 
+
+/*
+ * pselect6 reducido para Nethra.
+ * Admite fd 0 para la consola y descriptores validos hasta nfds <= 64.
+ * Las mascaras de señales no nulas aun no estan implementadas.
+ */
+static uint64_t sys_pselect6(uint64_t nfds, uint64_t ur, uint64_t uw,
+                             uint64_t ux, uint64_t ut, uint64_t us)
+{
+    if (nfds > 64) return ERR(EINVAL);
+
+    uint64_t bytes = nfds ? 8 : 0;
+    if (bytes && ur && !user_range_ok(ur, bytes)) return ERR(EFAULT);
+    if (bytes && uw && !user_range_ok(uw, bytes)) return ERR(EFAULT);
+    if (bytes && ux && !user_range_ok(ux, bytes)) return ERR(EFAULT);
+
+    uint64_t rin = (bytes && ur) ? *(const uint64_t *)ur : 0;
+    uint64_t win = (bytes && uw) ? *(const uint64_t *)uw : 0;
+    uint64_t xin = (bytes && ux) ? *(const uint64_t *)ux : 0;
+
+    if (nfds < 64) {
+        uint64_t mask = nfds ? ((1ULL << nfds) - 1ULL) : 0;
+        rin &= mask;
+        win &= mask;
+        xin &= mask;
+    }
+
+    /* Un descriptor solicitado pero inválido debe devolver EBADF. */
+    for (uint64_t fd = 0; fd < nfds; fd++) {
+        uint64_t bit = 1ULL << fd;
+        if (((rin | win | xin) & bit) &&
+            !fd_lookup(task_proc()->fds, fd))
+            return ERR(EBADF);
+    }
+
+    uint64_t deadline = 0;
+    int has_timeout = ut != 0;
+
+    if (has_timeout) {
+        if (!user_range_ok(ut, 16)) return ERR(EFAULT);
+
+        const int64_t *ts = (const int64_t *)ut;
+        int64_t sec = ts[0];
+        int64_t nsec = ts[1];
+
+        if (sec < 0 || nsec < 0 || nsec >= 1000000000LL)
+            return ERR(EINVAL);
+
+        uint64_t s = (uint64_t)sec;
+        uint64_t ns_ticks =
+            ((uint64_t)nsec + 9999999ULL) / 10000000ULL;
+        uint64_t ticks;
+
+        if (s > (UINT64_MAX - ns_ticks) / 100ULL)
+            ticks = UINT64_MAX;
+        else
+            ticks = s * 100ULL + ns_ticks;
+
+        uint64_t now = timer_ticks();
+        deadline = UINT64_MAX - now < ticks
+            ? UINT64_MAX : now + ticks;
+    }
+
+    /*
+     * ABI pselect6: us apunta a { sigset_t *ss; size_t ss_len }.
+     * Se acepta una mascara nula; aplicar una mascara no nula
+     * queda pendiente para una implementación posterior.
+     */
+    if (us) {
+        if (!user_range_ok(us, 16)) return ERR(EFAULT);
+        const uint64_t *sm = (const uint64_t *)us;
+        if (sm[1] != 8) return ERR(EINVAL);
+    }
+
+    for (;;) {
+        uint64_t rout = 0, wout = 0, xout = 0;
+
+        for (uint64_t fd = 0; fd < nfds; fd++) {
+            uint64_t bit = 1ULL << fd;
+
+            if (rin & bit) {
+                /* La consola solo esta lista para leer con datos en cola. */
+                if (fd == 0) {
+                    if (keyboard_has_data()) rout |= bit;
+                } else {
+                    rout |= bit;
+                }
+            }
+
+            /* Escritura: aproximacion actual para descriptores validos. */
+            if (win & bit) wout |= bit;
+
+            /* Las condiciones de excepcion aun no estan soportadas. */
+        }
+
+        uint64_t ready = 0;
+        for (uint64_t fd = 0; fd < nfds; fd++) {
+            uint64_t bit = 1ULL << fd;
+            if ((rout | wout | xout) & bit) ready++;
+        }
+
+        if (ready || (has_timeout && timer_ticks() >= deadline)) {
+            if (bytes && ur) *(uint64_t *)ur = rout;
+            if (bytes && uw) *(uint64_t *)uw = wout;
+            if (bytes && ux) *(uint64_t *)ux = xout;
+            return ready;
+        }
+
+        if (task_sigpending()) return ERR(EINTR);
+
+        yield();
+        __asm__ volatile("sti; hlt; cli" : : : "memory");
+    }
+}
+
 /* nanosleep: espera por ticks (100 Hz); EINTR si llega una senal */
 static uint64_t sys_nanosleep(uint64_t req, uint64_t rem)
 {
@@ -920,6 +1035,8 @@ void syscall_dispatch(struct regs *r)
     case 14:  r->rax = sys_sigprocmask(r->rdi, r->rsi, r->rdx, r->r10); break;
     case 15:  sig_sigreturn(r); break;            /* no toca rax: restaura todo el frame */
     case 7:   r->rax = sys_poll(r->rdi, r->rsi, r->rdx); break;
+    case 270: r->rax = sys_pselect6(r->rdi, r->rsi, r->rdx,
+                                    r->r10, r->r8, r->r9); break;
     case 35:  r->rax = sys_nanosleep(r->rdi, r->rsi); break;
     case 230: r->rax = sys_nanosleep(r->rdx, r->r10); break;   /* clock_nanosleep(clk, flags, req, rem) */
     case 62:  r->rax = sys_kill(r->rdi, r->rsi); break;
