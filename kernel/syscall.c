@@ -15,6 +15,7 @@
 #include "pmm.h"
 #include "mem.h"
 #include "timer.h"
+#include "power.h"
 
 #define SYS_READ  0
 #define SYS_WRITE 1
@@ -41,6 +42,8 @@
 #define SYS_ARCH_PRCTL  158                /* Linux */
 #define SYS_SET_TID     218
 #define SYS_EXIT_GROUP  231
+#define SYS_REBOOT 169
+#define SYS_SYNC 162
 
 #define UBASE 0x0000000000400000ULL        /* region de usuario */
 #define UEND  0x00007FFFFFFFF000ULL
@@ -55,6 +58,32 @@
 #define EINVAL 22
 #define ENOMEM 12
 #define ENODEV 19
+
+/* Linux reboot(2): validación del ABI antes de tocar el hardware. */
+static uint64_t sys_reboot(uint64_t magic1, uint64_t magic2, uint64_t cmd)
+{
+    if (magic1 != 0xFEE1DEADULL)
+        return ERR(EINVAL);
+
+    if (magic2 != 0x28121969ULL &&
+        magic2 != 0x05121996ULL &&
+        magic2 != 0x16041998ULL &&
+        magic2 != 0x20112000ULL)
+        return ERR(EINVAL);
+
+    switch (cmd) {
+    case 0x01234567ULL: /* LINUX_REBOOT_CMD_RESTART */
+    case 0xA1B2C3D4ULL: /* LINUX_REBOOT_CMD_RESTART2 */
+        power_reboot();
+
+    case 0x4321FEDCULL: /* LINUX_REBOOT_CMD_POWER_OFF */
+    case 0xCDEF0123ULL: /* LINUX_REBOOT_CMD_HALT: detener la VM */
+        power_poweroff();
+
+    default:
+        return ERR(EINVAL);
+    }
+}
 
 /* El rango tiene que estar en la region de usuario y mapeado */
 int user_range_ok(uint64_t p, uint64_t len)
@@ -1062,6 +1091,13 @@ void syscall_dispatch(struct regs *r)
     case 87:  r->rax = sys_unlink(r->rdi); break;
     case 263: r->rax = sys_unlink(r->rsi); break;   /* unlinkat: dirfd ignorado */
     case 99:  r->rax = sys_sysinfo(r->rdi); break;
+    case SYS_REBOOT:
+        r->rax = sys_reboot(r->rdi, r->rsi, r->rdx);
+        break;
+    case SYS_SYNC:
+        /* No hay todavía almacenamiento persistente que vaciar. */
+        r->rax = 0;
+        break;
     case SYS_GETPID:  r->rax = (uint64_t)task_id(); break;
     case SYS_GETPPID: r->rax = (uint64_t)user_ppid(); break;
     case SYS_WAIT4:   r->rax = sys_wait4(r->rdi, r->rsi, r->rdx, r->r10); break;
