@@ -1299,7 +1299,11 @@ void fat32_init(void)
             #ifdef FAT32_ENABLE_WRITES
             console_puts("FAT32: montado en /disk, ESCRITURA EXPERIMENTAL\n");
 #else
+            #ifdef FAT32_ENABLE_WRITES
+            console_puts("FAT32: montado en /disk, ESCRITURA EXPERIMENTAL\n");
+#else
             console_puts("FAT32: montado en /disk, solo lectura\n");
+#endif
 #endif
             return;
         }
