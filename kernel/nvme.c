@@ -174,6 +174,7 @@ static void command_prp1(struct nvme_command *cmd, uint64_t phys)
 /* Una orden pendiente por cola; sondeo sin interrupciones. */
 static int submit(struct nvme_queue *q, const struct nvme_command *cmd)
 {
+    const uint16_t expected_cid = (uint16_t)(cmd->dw[0] >> 16);
     volatile uint32_t *dst = (volatile uint32_t *)&q->sq[q->tail];
 
     for (unsigned i = 0; i < 16; i++)
@@ -194,6 +195,7 @@ static int submit(struct nvme_queue *q, const struct nvme_command *cmd)
             continue;
 
         nvme_fence();
+        uint16_t completed_cid = q->cq[q->head].cid;
 
         q->head++;
         if (q->head >= q->depth) {
@@ -204,17 +206,37 @@ static int submit(struct nvme_queue *q, const struct nvme_command *cmd)
         *q->cq_db = q->head;
         nvme_fence();
 
+        if (completed_cid != expected_cid) {
+            console_puts("[nvme] CID de completion inesperado; esperado=");
+            console_hex(expected_cid);
+            console_puts(" recibido=");
+            console_hex(completed_cid);
+            console_putc('\n');
+
+            /* La cola ya no se considera confiable. */
+            nvme_ready = 0;
+            return -1;
+        }
+
         if (status & 0xFFFEu) {
             console_puts("[nvme] comando fallo; status=");
             console_hex(status);
             console_putc('\n');
+
+            /* No seguir usando el dispositivo tras un comando fallido. */
+            nvme_ready = 0;
             return -1;
         }
 
         return 0;
     }
 
-    console_puts("[nvme] timeout esperando completion\n");
+    /*
+     * No reutilizar la cola tras un timeout: el comando anterior
+     * podría completar más tarde y dejar una finalización pendiente.
+     */
+    nvme_ready = 0;
+    console_puts("[nvme] timeout esperando completion; dispositivo deshabilitado\n");
     return -1;
 }
 
@@ -227,6 +249,9 @@ static void print_hex_byte(uint8_t v)
 
 void nvme_init(void)
 {
+    /* Una inicialización incompleta nunca debe anunciar el dispositivo como listo. */
+    nvme_ready = 0;
+
     struct pci_nvme_device dev;
 
     console_puts("\nNVMe: inicializando controlador...\n");
@@ -444,9 +469,6 @@ void nvme_init(void)
         return;
     }
 
-    /* La cola de I/O está lista para usar la API pública. */
-    nvme_ready = 1;
-
     /* Read de un bloque lógico en SLBA=0. NLB=0 significa un bloque. */
     command_init(&nvme_ioq, &cmd, NVME_OP_READ, 1);
     command_prp1(&cmd, data_phys);
@@ -482,6 +504,9 @@ void nvme_init(void)
             console_putc(i == 15 ? '\n' : ' ');
         }
     }
+
+    /* Publicar el dispositivo solo después de completar la lectura de prueba. */
+    nvme_ready = 1;
 
 #if defined(NVME_TEST_WRITES)
     nvme_selftest_write();
