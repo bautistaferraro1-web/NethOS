@@ -105,7 +105,53 @@ int user_range_ok(uint64_t p, uint64_t len)
 #define IOV_MAX 1024
 struct nethel_iovec { uint64_t base, len; };
 
-static struct file *cur_fd(uint64_t fd) { return fd_lookup(task_proc()->fds, fd); }
+static struct file *cur_fd(uint64_t fd)
+{
+    return fd_lookup(task_proc()->fds, fd);
+}
+
+/* requested: R=4, W=2, X=1.
+   real_ids=1 usa ruid/rgid para access(); en otro caso usa euid/egid. */
+static int file_access_allowed(struct file *f, unsigned requested, int real_ids)
+{
+    uint8_t st[144] = {0};
+
+    if (!f || !f->ops || !f->ops->stat ||
+        f->ops->stat(f, st) < 0)
+        return 0;
+
+    uint32_t mode = *(uint32_t *)(st + 24);
+    uint32_t owner = *(uint32_t *)(st + 28);
+    uint32_t group = *(uint32_t *)(st + 32);
+
+    struct proc *p = task_proc();
+    uint32_t uid = real_ids ? p->ruid : p->euid;
+    uint32_t gid = real_ids ? p->rgid : p->egid;
+
+    /* F_OK: basta con que el objeto exista. */
+    if (!requested)
+        return 1;
+
+    /* Root puede leer y escribir; para ejecutar un archivo regular,
+       debe existir al menos un bit de ejecución. */
+    if (uid == 0) {
+        if ((requested & 1u) &&
+            (mode & 0170000u) == 0100000u &&
+            !(mode & 0111u))
+            return 0;
+        return 1;
+    }
+
+    unsigned bits;
+    if (uid == owner)
+        bits = (mode >> 6) & 7u;
+    else if (gid == group)
+        bits = (mode >> 3) & 7u;
+    else
+        bits = mode & 7u;
+
+    return (bits & requested) == requested;
+}
 
 static uint64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len)
 {
@@ -502,12 +548,32 @@ static struct file *open_any(const char *p)
     return initramfs_open(p);
 }
 
-static uint64_t do_open(uint64_t upath, uint64_t flags)
+static uint64_t do_open(uint64_t upath, uint64_t flags, uint64_t mode)
 {
     char p[PATH_MAX_K];
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
+    int acc = (int)(flags & 3);
+    if (acc == 3) return ERR(EINVAL);
+
+    /* O_CREAT | O_EXCL debe fallar si el nombre ya existe. */
+    struct file *probe = open_any(p);
+    if (probe) {
+        if ((flags & 0100) && (flags & 0200)) {
+            file_put(probe);
+            return ERR(17); /* EEXIST */
+        }
+
+        unsigned requested = acc == 0 ? 4u : acc == 1 ? 2u : 6u;
+        if (flags & 01000) requested |= 2u; /* O_TRUNC requiere escritura */
+
+        int allowed = file_access_allowed(probe, requested, 0);
+        file_put(probe);
+
+        if (!allowed) return ERR(EACCES);
+    }
+
     int wr = (flags & 3) || (flags & 0100) || (flags & 01000);
     struct file *f;
     if (!wr) {
@@ -522,7 +588,9 @@ static uint64_t do_open(uint64_t upath, uint64_t flags)
             if (ro) { file_put(ro); return ERR(EROFS); }
         }
         int err = 0;
-        f = tmpfs_open(p, (int)flags, &err);
+        struct proc *pr = task_proc();
+        f = tmpfs_open_as(p, (int)flags, (uint32_t)mode,
+                          pr->euid, pr->egid, pr->umask, &err);
         if (!f) return ERR(err);
     }
     if (!f) return ERR(ENOENT);
@@ -531,9 +599,17 @@ static uint64_t do_open(uint64_t upath, uint64_t flags)
     return (uint64_t)fd;
 }
 
-static uint64_t sys_open(uint64_t path, uint64_t flags) { return do_open(path, flags); }
+static uint64_t sys_open(uint64_t path, uint64_t flags, uint64_t mode)
+{
+    return do_open(path, flags, mode);
+}
 /* dirfd se ignora: todo es relativo a / */
-static uint64_t sys_openat(uint64_t dirfd, uint64_t path, uint64_t flags) { (void)dirfd; return do_open(path, flags); }
+static uint64_t sys_openat(uint64_t dirfd, uint64_t path,
+                           uint64_t flags, uint64_t mode)
+{
+    (void)dirfd;
+    return do_open(path, flags, mode);
+}
 
 static uint64_t sys_stat(uint64_t upath, uint64_t st)
 {
@@ -550,8 +626,26 @@ static uint64_t sys_stat(uint64_t upath, uint64_t st)
     return rv;
 }
 
-/* chown limitado: los filesystems actuales exponen todos los archivos
-   como root:root y todavía no almacenan metadatos de propietario. */
+static uint64_t sys_chmod(uint64_t upath, uint64_t mode)
+{
+    char path[PATH_MAX_K];
+    int rc = user_path(path, upath);
+    if (rc == -1) return ERR(EFAULT);
+    if (rc == -2) return ERR(ENAMETOOLONG);
+
+    struct proc *p = task_proc();
+
+    if (tmpfs_exists(path)) {
+        rc = tmpfs_chmod(path, (uint32_t)mode, p->euid);
+        return rc < 0 ? ERR(-rc) : 0;
+    }
+
+    struct file *f = open_any(path);
+    if (!f) return ERR(ENOENT);
+    file_put(f);
+    return ERR(30);                    /* EROFS: filesystem de solo lectura */
+}
+
 static uint64_t sys_chown(uint64_t upath, uint64_t uid, uint64_t gid)
 {
     char path[PATH_MAX_K];
@@ -559,20 +653,17 @@ static uint64_t sys_chown(uint64_t upath, uint64_t uid, uint64_t gid)
     if (rc == -1) return ERR(EFAULT);
     if (rc == -2) return ERR(ENAMETOOLONG);
 
+    struct proc *p = task_proc();
+
+    if (tmpfs_exists(path)) {
+        rc = tmpfs_chown(path, (uint32_t)uid, (uint32_t)gid, p->euid);
+        return rc < 0 ? ERR(-rc) : 0;
+    }
+
     struct file *f = open_any(path);
     if (!f) return ERR(ENOENT);
     file_put(f);
-
-    /* (uid_t)-1 y (gid_t)-1 significan conservar el valor actual. */
-    uint32_t new_uid = (uint32_t)uid;
-    uint32_t new_gid = (uint32_t)gid;
-
-    if ((new_uid != 0 && new_uid != UINT32_MAX) ||
-        (new_gid != 0 && new_gid != UINT32_MAX))
-        return ERR(EPERM);
-
-    /* UID/GID son cero por defecto en los stat actuales. */
-    return 0;
+    return ERR(30);                    /* EROFS */
 }
 
 static uint64_t sys_lseek(uint64_t fd, uint64_t off, uint64_t whence)
@@ -938,11 +1029,183 @@ static uint64_t sys_setsid(void)
     return task_setsid() ? ERR(1) : (uint64_t)task_id();
 }
 
-static uint64_t sys_getres(uint64_t a, uint64_t b, uint64_t c)
+
+/* getresuid/getresgid: los punteros NULL son válidos; se validan
+   todos los destinos antes de escribir para evitar resultados parciales. */
+static uint64_t sys_getres(uint64_t a, uint64_t b, uint64_t c, int groups)
 {
-    if (zero_user(a, 4) || zero_user(b, 4) || zero_user(c, 4)) return ERR(EFAULT);
+    struct proc *p = task_proc();
+    uint32_t v[3];
+
+    if (groups) {
+        v[0] = p->rgid; v[1] = p->egid; v[2] = p->sgid;
+    } else {
+        v[0] = p->ruid; v[1] = p->euid; v[2] = p->suid;
+    }
+
+    uint64_t dst[3] = { a, b, c };
+    for (int i = 0; i < 3; i++)
+        if (dst[i] && !user_range_ok(dst[i], sizeof(uint32_t)))
+            return ERR(14); /* EFAULT */
+
+    for (int i = 0; i < 3; i++)
+        if (dst[i])
+            *(uint32_t *)dst[i] = v[i];
+
     return 0;
 }
+
+/* En las variantes setre* y setres*, -1 significa "no modificar".
+   En x86-64 puede llegar como 0xffffffff o como UINT64_MAX. */
+static int parse_optional_id(uint64_t raw, uint32_t *value)
+{
+    if (raw == UINT64_MAX || raw == UINT32_MAX)
+        return 1;
+    if (raw > UINT32_MAX)
+        return -1;
+    *value = (uint32_t)raw;
+    return 0;
+}
+
+static int uid_permitted(const struct proc *p, uint32_t id)
+{
+    return p->euid == 0 ||
+           id == p->ruid || id == p->euid || id == p->suid;
+}
+
+static int gid_permitted(const struct proc *p, uint32_t id)
+{
+    return p->euid == 0 ||
+           id == p->rgid || id == p->egid || id == p->sgid;
+}
+
+static uint64_t sys_getuid(void)  { return task_proc()->ruid; }
+static uint64_t sys_geteuid(void) { return task_proc()->euid; }
+static uint64_t sys_getgid(void)  { return task_proc()->rgid; }
+static uint64_t sys_getegid(void) { return task_proc()->egid; }
+
+static uint64_t sys_setuid(uint64_t raw)
+{
+    struct proc *p = task_proc();
+    if (raw > UINT32_MAX || raw == UINT32_MAX) return ERR(22); /* EINVAL */
+    uint32_t id = (uint32_t)raw;
+
+    if (p->euid == 0) {
+        p->ruid = p->euid = p->suid = id;
+        return 0;
+    }
+    if (!uid_permitted(p, id)) return ERR(1); /* EPERM */
+    p->euid = id;
+    return 0;
+}
+
+static uint64_t sys_setgid(uint64_t raw)
+{
+    struct proc *p = task_proc();
+    if (raw > UINT32_MAX || raw == UINT32_MAX) return ERR(22);
+    uint32_t id = (uint32_t)raw;
+
+    if (p->euid == 0) {
+        p->rgid = p->egid = p->sgid = id;
+        return 0;
+    }
+    if (!gid_permitted(p, id)) return ERR(1);
+    p->egid = id;
+    return 0;
+}
+
+static uint64_t sys_setreuid(uint64_t ur, uint64_t ue)
+{
+    struct proc *p = task_proc();
+    uint32_t r = 0, e = 0;
+    int sr = parse_optional_id(ur, &r);
+    int se = parse_optional_id(ue, &e);
+    if (sr < 0 || se < 0) return ERR(22);
+
+    if (p->euid != 0) {
+        if (sr == 0 && r != p->ruid && r != p->euid) return ERR(1);
+        if (se == 0 && e != p->ruid && e != p->euid && e != p->suid)
+            return ERR(1);
+    }
+
+    if (sr == 0) p->ruid = r;
+    if (se == 0) p->euid = e;
+    if (sr == 0 || se == 0) p->suid = p->euid;
+    return 0;
+}
+
+static uint64_t sys_setregid(uint64_t gr, uint64_t ge)
+{
+    struct proc *p = task_proc();
+    uint32_t r = 0, e = 0;
+    int sr = parse_optional_id(gr, &r);
+    int se = parse_optional_id(ge, &e);
+    if (sr < 0 || se < 0) return ERR(22);
+
+    if (p->euid != 0) {
+        if (sr == 0 && r != p->rgid && r != p->egid) return ERR(1);
+        if (se == 0 && e != p->rgid && e != p->egid && e != p->sgid)
+            return ERR(1);
+    }
+
+    if (sr == 0) p->rgid = r;
+    if (se == 0) p->egid = e;
+    if (sr == 0 || se == 0) p->sgid = p->egid;
+    return 0;
+}
+
+static uint64_t sys_setresuid(uint64_t ur, uint64_t ue, uint64_t us)
+{
+    struct proc *p = task_proc();
+    uint32_t id[3] = {0, 0, 0};
+    int set[3];
+
+    set[0] = parse_optional_id(ur, &id[0]);
+    set[1] = parse_optional_id(ue, &id[1]);
+    set[2] = parse_optional_id(us, &id[2]);
+    if (set[0] < 0 || set[1] < 0 || set[2] < 0) return ERR(22);
+
+    if (p->euid != 0) {
+        for (int i = 0; i < 3; i++)
+            if (set[i] == 0 && !uid_permitted(p, id[i])) return ERR(1);
+    }
+
+    if (set[0] == 0) p->ruid = id[0];
+    if (set[1] == 0) p->euid = id[1];
+    if (set[2] == 0) p->suid = id[2];
+    return 0;
+}
+
+static uint64_t sys_setresgid(uint64_t gr, uint64_t ge, uint64_t gs)
+{
+    struct proc *p = task_proc();
+    uint32_t id[3] = {0, 0, 0};
+    int set[3];
+
+    set[0] = parse_optional_id(gr, &id[0]);
+    set[1] = parse_optional_id(ge, &id[1]);
+    set[2] = parse_optional_id(gs, &id[2]);
+    if (set[0] < 0 || set[1] < 0 || set[2] < 0) return ERR(22);
+
+    if (p->euid != 0) {
+        for (int i = 0; i < 3; i++)
+            if (set[i] == 0 && !gid_permitted(p, id[i])) return ERR(1);
+    }
+
+    if (set[0] == 0) p->rgid = id[0];
+    if (set[1] == 0) p->egid = id[1];
+    if (set[2] == 0) p->sgid = id[2];
+    return 0;
+}
+
+static uint64_t sys_umask(uint64_t value)
+{
+    struct proc *p = task_proc();
+    uint32_t old = p->umask;
+    p->umask = (uint32_t)value & 0777;
+    return old;
+}
+
 
 static uint64_t sys_gettimeofday(uint64_t tv, uint64_t tz)
 {
@@ -1041,15 +1304,21 @@ static uint64_t sys_newfstatat(uint64_t dirfd, uint64_t upath, uint64_t st, uint
 
 static uint64_t sys_access(uint64_t upath, uint64_t mode)
 {
-    (void)mode;
+    if (mode & ~7ULL) return ERR(EINVAL);
+
     char p[PATH_MAX_K];
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
+
     struct file *f = open_any(p);
     if (!f) return ERR(ENOENT);
+
+    /* access(2) usa las credenciales reales, no las efectivas. */
+    int allowed = file_access_allowed(f, (unsigned)mode, 1);
     file_put(f);
-    return 0;
+
+    return allowed ? 0 : ERR(EACCES);
 }
 
 static uint64_t sys_pipe2(uint64_t ufds, uint64_t flags)
@@ -1103,8 +1372,8 @@ void syscall_dispatch(struct regs *r)
     case SYS_READ:  r->rax = sys_read(r->rdi, r->rsi, r->rdx); break;
     case SYS_WRITE: r->rax = sys_write(r->rdi, r->rsi, r->rdx); break;
     case SYS_CLOSE: r->rax = sys_close(r->rdi); break;
-    case SYS_OPEN:   r->rax = sys_open(r->rdi, r->rsi); break;
-    case SYS_OPENAT: r->rax = sys_openat(r->rdi, r->rsi, r->rdx); break;
+    case SYS_OPEN:   r->rax = sys_open(r->rdi, r->rsi, r->rdx); break;
+    case SYS_OPENAT: r->rax = sys_openat(r->rdi, r->rsi, r->rdx, r->r10); break;
     case SYS_STAT:   r->rax = sys_stat(r->rdi, r->rsi); break;
     case 6:   r->rax = sys_stat(r->rdi, r->rsi); break;   /* lstat: sin symlinks es igual a stat */
     case 22:  r->rax = sys_pipe2(r->rdi, 0); break;
@@ -1143,8 +1412,19 @@ void syscall_dispatch(struct regs *r)
     case 62:  r->rax = sys_kill(r->rdi, r->rsi); break;
     case 200: r->rax = sys_kill(r->rdi, r->rsi); break;   /* tkill */
     case 234: r->rax = sys_kill(r->rsi, r->rdx); break;   /* tgkill */
-    case 118: r->rax = sys_getres(r->rdi, r->rsi, r->rdx); break;
-    case 120: r->rax = sys_getres(r->rdi, r->rsi, r->rdx); break;
+    case 102: r->rax = sys_getuid(); break;
+    case 104: r->rax = sys_getgid(); break;
+    case 107: r->rax = sys_geteuid(); break;
+    case 108: r->rax = sys_getegid(); break;
+    case 105: r->rax = sys_setuid(r->rdi); break;
+    case 106: r->rax = sys_setgid(r->rdi); break;
+    case 113: r->rax = sys_setreuid(r->rdi, r->rsi); break;
+    case 114: r->rax = sys_setregid(r->rdi, r->rsi); break;
+    case 117: r->rax = sys_setresuid(r->rdi, r->rsi, r->rdx); break;
+    case 118: r->rax = sys_getres(r->rdi, r->rsi, r->rdx, 0); break;
+    case 119: r->rax = sys_setresgid(r->rdi, r->rsi, r->rdx); break;
+    case 120: r->rax = sys_getres(r->rdi, r->rsi, r->rdx, 1); break;
+    case 95:  r->rax = sys_umask(r->rdi); break;
     case 96:  r->rax = sys_gettimeofday(r->rdi, r->rsi); break;
     case 63:  r->rax = sys_uname(r->rdi); break;
     case 111: r->rax = (uint64_t)task_pgid(); break;
@@ -1153,10 +1433,14 @@ void syscall_dispatch(struct regs *r)
     case 33:  r->rax = sys_dup2(r->rdi, r->rsi); break;
     case 89:  r->rax = sys_readlink(r->rdi, r->rsi, r->rdx); break;
     case 262: r->rax = sys_newfstatat(r->rdi, r->rsi, r->rdx, r->r10); break;
-    case 102: case 104: case 107: case 108: r->rax = 0; break;
     case 21:  r->rax = sys_access(r->rdi, r->rsi); break;
     case 269: r->rax = sys_access(r->rsi, r->rdx); break;
+    case 90:  r->rax = sys_chmod(r->rdi, r->rsi); break;
     case 92:  r->rax = sys_chown(r->rdi, r->rsi, r->rdx); break;
+    case 94:  r->rax = sys_chown(r->rdi, r->rsi, r->rdx); break; /* lchown */
+    case 260: r->rax = sys_chown(r->rsi, r->rdx, r->r10); break; /* fchownat */
+    case 268: r->rax = sys_chmod(r->rsi, r->rdx); break;         /* fchmodat */
+    case 452: r->rax = sys_chmod(r->rsi, r->rdx); break;         /* fchmodat2 */
     case 109: r->rax = sys_setpgid(r->rdi, r->rsi); break;
     case 121: r->rax = sys_getpgid(r->rdi); break;
     case 112: r->rax = sys_setsid(); break;

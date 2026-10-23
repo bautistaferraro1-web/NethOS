@@ -22,12 +22,17 @@ struct proc {
     int pgid, sid;                      /* 0 = el propio id */
     struct ksigaction sa[NSIG];
     int stopped;                        /* 0 = corriendo, si no: senal que lo detuvo */
+
+    uint32_t ruid, euid, suid;
+    uint32_t rgid, egid, sgid;
+    uint32_t umask;
 };
 
 static inline void proc_clear(struct proc *p)
 {
-    uint64_t *w = (uint64_t *)p;
-    for (unsigned i = 0; i < sizeof(*p) / 8; i++) w[i] = 0;
+    uint8_t *b = (uint8_t *)p;
+    for (unsigned i = 0; i < sizeof(*p); i++) b[i] = 0;
+    p->umask = 022;
 }
 
 #endif

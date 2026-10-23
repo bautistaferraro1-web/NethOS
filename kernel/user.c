@@ -171,7 +171,13 @@ static int load_elf(uint64_t sp, const uint8_t *s, const uint8_t *e, uint64_t *e
 }
 
 /* Lo que spawn() le pasa a la tarea nueva (se libera en user_task) */
-struct launch { int which; struct uargs args; };
+struct launch {
+    int which;
+    struct uargs args;
+    uint32_t ruid, euid, suid;
+    uint32_t rgid, egid, sgid;
+    uint32_t umask;
+};
 
 /* 16 bytes "aleatorios" para AT_RANDOM (TSC + xorshift: suficiente por ahora) */
 static void fill_random(uint8_t *dst)
@@ -336,6 +342,16 @@ static void user_task(void *arg)
     uint64_t rsp = 0;
     uint64_t entry = 0;
 
+    /* spawn hereda la identidad del proceso que lo solicita. */
+    struct proc *pr = task_proc();
+    pr->ruid = l->ruid;
+    pr->euid = l->euid;
+    pr->suid = l->suid;
+    pr->rgid = l->rgid;
+    pr->egid = l->egid;
+    pr->sgid = l->sgid;
+    pr->umask = l->umask;
+
     task_mark_user();
 
     uint64_t f = irq_save();
@@ -390,6 +406,16 @@ static int spawn(const char *name, int which, const struct uargs *args)
     if (!l) return -1;
 
     l->which = which;
+
+    struct proc *parent = task_proc();
+    l->ruid = parent->ruid;
+    l->euid = parent->euid;
+    l->suid = parent->suid;
+    l->rgid = parent->rgid;
+    l->egid = parent->egid;
+    l->sgid = parent->sgid;
+    l->umask = parent->umask;
+
     l->args.argc = args ? args->argc : 0;
     for (int i = 0; i < USER_ARGBUF; i++) l->args.buf[i] = args ? args->buf[i] : 0;
 

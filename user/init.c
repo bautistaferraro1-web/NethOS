@@ -33,7 +33,23 @@ static int ask(const char *prompt, char *buf, int max)
     }
 }
 
-static int lookup(const char *user, char *home, char *shell)
+static int parse_id(const char *s, u64 *out)
+{
+    if (!*s) return 0;
+
+    u64 v = 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9') return 0;
+        u64 d = (u64)(*s - '0');
+        if (v > (0xFFFFFFFFULL - d) / 10) return 0;
+        v = v * 10 + d;
+    }
+    *out = v;
+    return 1;
+}
+
+static int lookup(const char *user, char *home, char *shell,
+                  u64 *uid, u64 *gid)
 {
     static char data[1024];
     long fd = sys3(2, (long)"/etc/passwd", 0, 0);
@@ -55,6 +71,9 @@ static int lookup(const char *user, char *home, char *shell)
         int more = (*q == '\n');
         *q = 0;
         if (k == 7 && streq(f[0], user)) {
+            if (!parse_id(f[2], uid) || !parse_id(f[3], gid))
+                return 0;
+
             int i = 0;
             while (f[5][i] && i < 63) { home[i] = f[5][i]; i++; }
             home[i] = 0;
@@ -72,6 +91,7 @@ static void login(void)
 {
     static char user[64], home[64], shell[64];
     static char e_home[80], e_user[80], e_shell[80];
+    u64 uid = 0, gid = 0;
     /* Crear una sesión propia antes de entregar la consola interactiva a Bash. */
     long sid = sys3(112, 0, 0, 0);            /* setsid */
     if (sid < 0) {
@@ -83,9 +103,19 @@ static void login(void)
     show_file("/etc/issue");
     for (;;) {
         if (ask("nethra login: ", user, 64) == 0) continue;
-        if (lookup(user, home, shell)) break;
+        if (lookup(user, home, shell, &uid, &gid)) break;
         print("Usuario desconocido\n");
     }
+    /* Cambiar primero el grupo; conservar euid=0 hasta terminar setresuid. */
+    if (sys3(119, (long)gid, (long)gid, (long)gid) < 0) {
+        print("login: setresgid fallo\\n");
+        return;
+    }
+    if (sys3(117, (long)uid, (long)uid, (long)uid) < 0) {
+        print("login: setresuid fallo\\n");
+        return;
+    }
+
     cat2(e_home, "HOME=", home);
     cat2(e_user, "USER=", user);
     cat2(e_shell, "SHELL=", shell);

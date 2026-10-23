@@ -6,7 +6,7 @@ extern const uint8_t _binary_initramfs_cpio_start[], _binary_initramfs_cpio_end[
 #define POOL_SZ  64
 #define S_IFREG_ 0100000
 
-struct ent { const char *name; const uint8_t *data; uint64_t size; uint32_t mode; };
+struct ent { const char *name; const uint8_t *data; uint64_t size; uint32_t mode, uid, gid; };
 static struct ent ents[MAX_ENT];
 static int nents, inited;
 static struct file pool[POOL_SZ];
@@ -30,15 +30,15 @@ static int streq(const char *a, const char *b)
 static void parse(void)
 {
     const uint8_t *p = _binary_initramfs_cpio_start, *end = _binary_initramfs_cpio_end;
-    ents[nents++] = (struct ent){ "", 0, 0, 0040755 };   /* raiz sintetica */
+    ents[nents++] = (struct ent){ "", 0, 0, 0040755, 0, 0 };   /* raiz sintetica */
     while (p + 110 <= end && nents < MAX_ENT) {
         if (p[0] != '0' || p[1] != '7' || p[2] != '0' || p[3] != '7' || p[4] != '0' || p[5] != '1') break;
-        uint32_t mode = hex8(p + 14), fsz = hex8(p + 54), nsz = hex8(p + 94);
+        uint32_t mode = hex8(p + 14), uid = hex8(p + 22), gid = hex8(p + 30), fsz = hex8(p + 54), nsz = hex8(p + 94);
         const char *name = (const char *)p + 110;
         const uint8_t *data = (const uint8_t *)(((uint64_t)(p + 110 + nsz) + 3) & ~3ULL);
         if (streq(name, "TRAILER!!!")) break;
         while (name[0] == '.' && name[1] == '/') name += 2;
-        ents[nents++] = (struct ent){ name, data, fsz, mode };
+        ents[nents++] = (struct ent){ name, data, fsz, mode, uid, gid };
         p = (const uint8_t *)(((uint64_t)(data + fsz) + 3) & ~3ULL);
     }
 }
@@ -61,6 +61,8 @@ static int64_t rf_stat(struct file *f, void *st)
     uint8_t *b = st;
     *(uint64_t *)(b + 16) = 1;                         /* st_nlink   */
     *(uint32_t *)(b + 24) = e->mode ? e->mode : (S_IFREG_ | 0644);
+    *(uint32_t *)(b + 28) = e->uid;
+    *(uint32_t *)(b + 32) = e->gid;
     *(int64_t  *)(b + 48) = (int64_t)e->size;          /* st_size    */
     *(int64_t  *)(b + 56) = 4096;                      /* st_blksize */
     *(int64_t  *)(b + 64) = (int64_t)((e->size + 511) / 512);

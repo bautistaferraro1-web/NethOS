@@ -13,7 +13,7 @@
 #define O_APPEND_ 02000
 #define S_IFREG_  0100000
 
-struct tnode { char name[T_NAME]; uint8_t *data; uint64_t size, cap; int used; };
+struct tnode { char name[T_NAME]; uint8_t *data; uint64_t size, cap; int used; uint32_t mode, uid, gid; };
 
 static struct tnode nodes[T_MAX];
 static struct file  pool[T_POOL];
@@ -84,7 +84,9 @@ static int64_t t_stat(struct file *f, void *st)
     struct tnode *t = f->priv;
     uint8_t *b = st;
     *(uint64_t *)(b + 16) = 1;
-    *(uint32_t *)(b + 24) = S_IFREG_ | 0644;
+    *(uint32_t *)(b + 24) = t->mode;
+    *(uint32_t *)(b + 28) = t->uid;
+    *(uint32_t *)(b + 32) = t->gid;
     *(int64_t  *)(b + 48) = (int64_t)t->size;
     *(int64_t  *)(b + 56) = 4096;
     *(int64_t  *)(b + 64) = (int64_t)((t->size + 511) / 512);
@@ -106,7 +108,9 @@ static int64_t t_lseek(struct file *f, int64_t off, int whence)
 
 static const struct file_ops t_ops = { t_read, t_write, 0, t_stat, t_lseek, 0, 0 };
 
-struct file *tmpfs_open(const char *path, int flags, int *err)
+struct file *tmpfs_open_as(const char *path, int flags,
+                            uint32_t mode, uint32_t uid, uint32_t gid,
+                            uint32_t mask, int *err)
 {
     path = norm(path);
     int idx = -1;
@@ -127,6 +131,9 @@ struct file *tmpfs_open(const char *path, int flags, int *err)
         if (!t) { *err = 28; return 0; }                 /* ENOSPC */
         for (int i = 0; i <= l; i++) t->name[i] = path[i];
         t->data = 0; t->size = 0; t->cap = 0; t->used = 1;
+        t->mode = S_IFREG_ | ((mode & 0777u) & ~(mask & 0777u));
+        t->uid = uid;
+        t->gid = gid;
     }
     pool[idx].ops = &t_ops;
     pool[idx].refcount = 1;
@@ -134,6 +141,52 @@ struct file *tmpfs_open(const char *path, int flags, int *err)
     pool[idx].priv = t;
     pflags[idx] = flags;
     return &pool[idx];
+}
+
+/* Compatibilidad para búsquedas y llamadas internas que no crean archivos. */
+struct file *tmpfs_open(const char *path, int flags, int *err)
+{
+    return tmpfs_open_as(path, flags, 0644, 0, 0, 022, err);
+}
+
+int tmpfs_chmod(const char *path, uint32_t mode, uint32_t euid)
+{
+    struct tnode *t = find(path);
+    if (!t) return -2;                 /* ENOENT */
+
+    if (euid != 0 && euid != t->uid)
+        return -1;                     /* EPERM */
+
+    uint32_t bits = mode & 07777u;
+
+    /* Un usuario no privilegiado no puede establecer bits setuid/setgid
+       mediante esta implementación inicial. */
+    if (euid != 0)
+        bits &= 0777u;
+
+    t->mode = (t->mode & 0170000u) | bits;
+    return 0;
+}
+
+int tmpfs_chown(const char *path, uint32_t uid, uint32_t gid,
+                uint32_t euid)
+{
+    struct tnode *t = find(path);
+    if (!t) return -2;                 /* ENOENT */
+    if (euid != 0) return -1;          /* EPERM */
+
+    /* UINT32_MAX representa el argumento -1: conservar el identificador. */
+    int change_uid = uid != UINT32_MAX && uid != t->uid;
+    int change_gid = gid != UINT32_MAX && gid != t->gid;
+
+    if (uid != UINT32_MAX) t->uid = uid;
+    if (gid != UINT32_MAX) t->gid = gid;
+
+    /* Cambiar propietario/grupo elimina los bits setuid y setgid. */
+    if (change_uid || change_gid)
+        t->mode &= ~06000u;
+
+    return 0;
 }
 
 int tmpfs_unlink(const char *path)
