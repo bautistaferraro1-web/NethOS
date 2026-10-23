@@ -17,6 +17,7 @@
 #include "mem.h"
 #include "timer.h"
 #include "power.h"
+#include "rtc.h"
 
 #define SYS_READ  0
 #define SYS_WRITE 1
@@ -59,6 +60,7 @@
 #define EINVAL 22
 #define ENOMEM 12
 #define ENODEV 19
+#define EIO 5
 
 /* Linux reboot(2): validación del ABI antes de tocar el hardware. */
 static uint64_t sys_reboot(uint64_t magic1, uint64_t magic2, uint64_t cmd)
@@ -374,6 +376,23 @@ static uint64_t sys_set_tid(uint64_t addr)
 {
     task_proc()->clear_tid = addr;
     return (uint64_t)task_id();
+}
+
+#define SYS_TIME 201
+
+static uint64_t sys_time(uint64_t tloc)
+{
+    if (tloc && !user_range_ok(tloc, sizeof(int64_t)))
+        return ERR(EFAULT);
+
+    int64_t now;
+    if (rtc_get_unix_seconds(&now) != 0)
+        return ERR(EIO);
+
+    if (tloc)
+        *(int64_t *)tloc = now;
+
+    return (uint64_t)now;
 }
 
 #define SYS_CLOCK_GETTIME 228
@@ -1124,6 +1143,7 @@ void syscall_dispatch(struct regs *r)
         r->rax = sys_mprotect(r->rdi, r->rsi, r->rdx); break;
     case SYS_MUNMAP:     r->rax = sys_munmap(r->rdi, r->rsi); break;
     case SYS_FSTAT:      r->rax = sys_fstat(r->rdi, r->rsi); break;
+    case SYS_TIME:       r->rax = sys_time(r->rdi); break;
     case SYS_CLOCK_GETTIME: r->rax = sys_clock_gettime(r->rdi, r->rsi); break;
     case SYS_EXIT:
     case SYS_EXIT_GROUP:

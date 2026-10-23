@@ -21,6 +21,35 @@ int nmain(int argc, char **argv)
     u64 me = child ? 0xC1C1C1C1ULL : 0xA0A0A0A0ULL;
     long id = 0;
     int bad = 0;
+    /* Prueba Linux x86-64 time(2): RTC, puntero opcional y EFAULT. */
+    long time_null = sys3(201, 0, 0, 0);
+    long stored_time = 0;
+    long time_ptr = sys3(201, (long)&stored_time, 0, 0);
+    long time_badptr = sys3(201, 1, 0, 0);
+
+    int time_ok =
+        time_null >= 1700000000L && time_null < 2200000000L &&
+        time_ptr >= 1700000000L && time_ptr < 2200000000L &&
+        time_ptr == stored_time &&
+        time_badptr == -14;
+
+    print("[abi] time(NULL)=");
+    print_num((u64)time_null);
+    print("\n");
+
+    print("[abi] time(&t)=");
+    print_num((u64)time_ptr);
+    print(" almacenado=");
+    print_num((u64)stored_time);
+    print("\n");
+
+    print("[abi] puntero invalido -> EFAULT ");
+    print(time_badptr == -14 ? "OK\n" : "FALLO\n");
+
+    print("[abi] RTC/time(2) ");
+    print(time_ok ? "OK\n" : "FALLO\n");
+    if (time_ok == 0) bad++;
+
 
     if (!child) {
         char **e = argv + argc + 1;          /* saltar argv y envp */
