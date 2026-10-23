@@ -50,6 +50,37 @@ int nmain(int argc, char **argv)
     print(time_ok ? "OK\n" : "FALLO\n");
     if (time_ok == 0) bad++;
 
+    long rt[2] = {0, 0};
+    long mono[2] = {0, 0};
+    long mono2[2] = {0, 0};
+
+    long r1 = sys3(228, 0, (long)rt, 0);
+    long r2 = sys3(228, 1, (long)mono, 0);
+    long r3 = sys3(228, 1, (long)mono2, 0);
+    long r4 = sys3(228, 1, 1, 0);
+    long r5 = sys3(228, 2, (long)rt, 0);
+
+    int clock_ok =
+        r1 == 0 && r2 == 0 && r3 == 0 &&
+        rt[0] >= 1700000000L && rt[0] < 2200000000L &&
+        rt[1] == 0 &&
+        mono[1] >= 0 && mono[1] < 1000000000L &&
+        mono2[1] >= 0 && mono2[1] < 1000000000L &&
+        (mono2[0] > mono[0] ||
+         (mono2[0] == mono[0] && mono2[1] >= mono[1])) &&
+        r4 == -14 && r5 == -22;
+
+    print("[abi] realtime=");
+    print_num((u64)rt[0]);
+    print(" monotonic=");
+    print_num((u64)mono[0]);
+    print("\n");
+    print("[abi] clock_gettime errores ");
+    print(r4 == -14 && r5 == -22 ? "OK\n" : "FALLO\n");
+    print("[abi] REALTIME/MONOTONIC ");
+    print(clock_ok ? "OK\n" : "FALLO\n");
+    if (clock_ok == 0) bad++;
+
 
     if (!child) {
         char **e = argv + argc + 1;          /* saltar argv y envp */

@@ -400,12 +400,29 @@ static uint64_t sys_time(uint64_t tloc)
 /* Reloj monotonico a 100 Hz; sirve para cualquier clk_id por ahora */
 static uint64_t sys_clock_gettime(uint64_t clk, uint64_t ts)
 {
-    if (clk > 11) return ERR(EINVAL);
-    if (!user_range_ok(ts, 16)) return ERR(EFAULT);
-    uint64_t t = timer_ticks();
+    if (clk != 0 && clk != 1)
+        return ERR(EINVAL);
+
+    if (!user_range_ok(ts, 16))
+        return ERR(EFAULT);
+
+    uint64_t sec, nsec;
+
+    if (clk == 0) {
+        int64_t now;
+        if (rtc_get_unix_seconds(&now) != 0)
+            return ERR(EIO);
+        sec = (uint64_t)now;
+        nsec = 0;
+    } else {
+        uint64_t t = timer_ticks();
+        sec = t / 100;
+        nsec = (t % 100) * 10000000ULL;
+    }
+
     uint64_t *p = (uint64_t *)ts;
-    p[0] = t / 100;
-    p[1] = (t % 100) * 10000000ULL;
+    p[0] = sec;
+    p[1] = nsec;
     return 0;
 }
 
