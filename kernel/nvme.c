@@ -74,6 +74,10 @@ static int nvme_ready;
 static void nvme_selftest_persist(void);
 #endif
 
+#ifdef NVME_TEST_BOUNDS
+static void nvme_selftest_bounds(void);
+#endif
+
 static uint32_t reg_read32(uint32_t off)
 {
     return *(volatile uint32_t *)(nvme_regs + off);
@@ -521,6 +525,10 @@ void nvme_init(void)
     /* Publicar el dispositivo solo después de completar la lectura de prueba. */
     nvme_ready = 1;
 
+#ifdef NVME_TEST_BOUNDS
+    nvme_selftest_bounds();
+#endif
+
 #if defined(NVME_TEST_WRITES)
     nvme_selftest_write();
 #elif defined(NVME_TEST_PERSIST)
@@ -664,6 +672,40 @@ static void nvme_selftest_persist(void)
     }
 
     console_puts("NVMe TEST PERSIST: datos conservados; lectura OK\n");
+}
+#endif
+
+#ifdef NVME_TEST_BOUNDS
+static void nvme_selftest_bounds(void)
+{
+    static uint8_t scratch[NVME_PAGE_SIZE];
+    uint32_t failures = 0;
+    uint32_t too_many = (uint32_t)(NVME_PAGE_SIZE / nvme_sector_size) + 1u;
+
+    console_puts("NVMe TEST BOUNDS: comprobando solicitudes invalidas...\n");
+
+    if (nvme_read_blocks(0, 0, scratch) == 0)
+        failures++;
+    if (nvme_read_blocks(0, 1, 0) == 0)
+        failures++;
+    if (nvme_read_blocks(nvme_sector_count, 1, scratch) == 0)
+        failures++;
+    if (nvme_read_blocks(nvme_sector_count - 1, 2, scratch) == 0)
+        failures++;
+    if (nvme_read_blocks(0, too_many, scratch) == 0)
+        failures++;
+    if (nvme_write_blocks(nvme_sector_count, 1, scratch) == 0)
+        failures++;
+    if (nvme_write_blocks(0, 1, 0) == 0)
+        failures++;
+
+    if (failures == 0) {
+        console_puts("NVMe TEST BOUNDS: todas las solicitudes invalidas rechazadas; OK\n");
+    } else {
+        console_puts("NVMe TEST BOUNDS: FALLO, solicitudes aceptadas=");
+        console_dec(failures);
+        console_putc('\n');
+    }
 }
 #endif
 
