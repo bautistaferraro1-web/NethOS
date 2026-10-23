@@ -195,7 +195,12 @@ void file_put(struct file *f)
 
 void fd_init_std(struct file **fds)
 {
-    con_tio_reset();
+    static int console_initialized;
+    if (!console_initialized) {
+        con_tio_reset();
+        console_initialized = 1;
+    }
+
     for (int i = 0; i < NFD; i++) fds[i] = 0;
     for (int i = 0; i < 3; i++) fds[i] = file_get(&console_file);
 }
