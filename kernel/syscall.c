@@ -52,6 +52,7 @@
 
 #define ERR(n) ((uint64_t)-(int64_t)(n))
 #define ENOENT 2
+#define EPERM  1
 #define EBADF  9
 #define E2BIG  7
 #define ENOEXEC 8
@@ -547,6 +548,31 @@ static uint64_t sys_stat(uint64_t upath, uint64_t st)
     uint64_t rv = (uint64_t)f->ops->stat(f, (void *)st);
     file_put(f);
     return rv;
+}
+
+/* chown limitado: los filesystems actuales exponen todos los archivos
+   como root:root y todavía no almacenan metadatos de propietario. */
+static uint64_t sys_chown(uint64_t upath, uint64_t uid, uint64_t gid)
+{
+    char path[PATH_MAX_K];
+    int rc = user_path(path, upath);
+    if (rc == -1) return ERR(EFAULT);
+    if (rc == -2) return ERR(ENAMETOOLONG);
+
+    struct file *f = open_any(path);
+    if (!f) return ERR(ENOENT);
+    file_put(f);
+
+    /* (uid_t)-1 y (gid_t)-1 significan conservar el valor actual. */
+    uint32_t new_uid = (uint32_t)uid;
+    uint32_t new_gid = (uint32_t)gid;
+
+    if ((new_uid != 0 && new_uid != UINT32_MAX) ||
+        (new_gid != 0 && new_gid != UINT32_MAX))
+        return ERR(EPERM);
+
+    /* UID/GID son cero por defecto en los stat actuales. */
+    return 0;
 }
 
 static uint64_t sys_lseek(uint64_t fd, uint64_t off, uint64_t whence)
@@ -1130,6 +1156,7 @@ void syscall_dispatch(struct regs *r)
     case 102: case 104: case 107: case 108: r->rax = 0; break;
     case 21:  r->rax = sys_access(r->rdi, r->rsi); break;
     case 269: r->rax = sys_access(r->rsi, r->rdx); break;
+    case 92:  r->rax = sys_chown(r->rdi, r->rsi, r->rdx); break;
     case 109: r->rax = sys_setpgid(r->rdi, r->rsi); break;
     case 121: r->rax = sys_getpgid(r->rdi); break;
     case 112: r->rax = sys_setsid(); break;
@@ -1172,7 +1199,10 @@ void syscall_dispatch(struct regs *r)
     default:
         switch (r->rax) {
         case 40: case 273: case 334: case 302: case 318: case 267: case 262: break;   /* esperadas */
-        default: console_puts("[kernel] syscall sin implementar: "); console_dec(r->rax); console_putc('\n');
+        default:
+            console_puts("[kernel] syscall sin implementar: ");
+            console_dec(r->rax);
+            console_putc('\n');
         }
         r->rax = ERR(38);                  /* ENOSYS */
     }
