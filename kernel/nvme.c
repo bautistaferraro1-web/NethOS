@@ -52,6 +52,7 @@ struct nvme_queue {
     volatile uint32_t *sq_db;
     volatile uint32_t *cq_db;
     uint16_t depth;
+    uint16_t qid;
     uint16_t tail;
     uint16_t head;
     uint16_t next_cid;
@@ -145,6 +146,7 @@ static void queue_init(struct nvme_queue *q,
     q->cq_db = (volatile uint32_t *)(nvme_regs + NVME_REG_DOORBELL
                                     + (2u * qid + 1u) * nvme_stride);
     q->depth = depth;
+    q->qid = qid;
     q->tail = 0;
     q->head = 0;
     q->next_cid = 1;
@@ -196,6 +198,7 @@ static int submit(struct nvme_queue *q, const struct nvme_command *cmd)
 
         nvme_fence();
         uint16_t completed_cid = q->cq[q->head].cid;
+        uint16_t completed_sqid = q->cq[q->head].sq_id;
 
         q->head++;
         if (q->head >= q->depth) {
@@ -205,6 +208,16 @@ static int submit(struct nvme_queue *q, const struct nvme_command *cmd)
 
         *q->cq_db = q->head;
         nvme_fence();
+
+        if (completed_sqid != q->qid) {
+            console_puts("[nvme] SQID de completion inesperado; esperado=");
+            console_hex(q->qid);
+            console_puts(" recibido=");
+            console_hex(completed_sqid);
+            console_putc('\n');
+            nvme_ready = 0;
+            return -1;
+        }
 
         if (completed_cid != expected_cid) {
             console_puts("[nvme] CID de completion inesperado; esperado=");
@@ -266,7 +279,7 @@ void nvme_init(void)
     /* Por ahora soportamos BAR MMIO dentro del mapa físico de 4 GiB. */
     if ((bar & (NVME_PAGE_SIZE - 1)) ||
         bar < NVME_PAGE_SIZE ||
-        bar + NVME_MAX_MMIO > 0x100000000ULL) {
+        bar > 0x100000000ULL - NVME_MAX_MMIO) {
         console_puts("NVMe: BAR fuera del rango soportado: ");
         console_hex(bar);
         console_putc('\n');
