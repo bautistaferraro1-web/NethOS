@@ -348,6 +348,17 @@ void nvme_init(void)
 
     uint16_t depth = entries < 16 ? (uint16_t)entries : 16;
 
+    /*
+     * Detener el controlador antes de reservar memoria para DMA.
+     * Si no podemos confirmar la parada, todavía no asignamos páginas.
+     */
+    reg_write32(NVME_REG_CC, 0);
+    if (wait_ready(0) != 0) {
+        console_puts("NVMe: no se pudo detener el controlador; "
+                     "no se asignaron buffers DMA\n");
+        return;
+    }
+
     uint64_t dma[7];
     unsigned allocated = 0;
 
@@ -371,10 +382,6 @@ void nvme_init(void)
     uint64_t data_phys = dma[6];
     nvme_data_phys = data_phys;
 
-    /* Deshabilitar antes de programar las colas administrativas. */
-    reg_write32(NVME_REG_CC, 0);
-    if (wait_ready(0) != 0)
-        return;
 
     struct nvme_queue *admin = &nvme_adminq;
     queue_init(admin, asq_phys, acq_phys, depth, NVME_ADMIN_QID);
@@ -389,10 +396,8 @@ void nvme_init(void)
     nvme_fence();
     reg_write32(NVME_REG_CC, cc);
 
-    if (wait_ready(1) != 0) {
-        reg_write32(NVME_REG_CC, 0);
-        return;
-    }
+    if (wait_ready(1) != 0)
+        goto init_fail_controller;
 
     console_puts("NVMe: controlador listo\n");
 
@@ -405,7 +410,7 @@ void nvme_init(void)
 
     if (submit(admin, &cmd) != 0) {
         console_puts("NVMe: Identify Controller fallo\n");
-        return;
+        goto init_fail_controller;
     }
 
     uint8_t *ctrl = (uint8_t *)P2V(identify_ctrl_phys);
@@ -429,7 +434,7 @@ void nvme_init(void)
 
     if (submit(admin, &cmd) != 0) {
         console_puts("NVMe: Identify Namespace fallo\n");
-        return;
+        goto init_fail_controller;
     }
 
     uint8_t *ns = (uint8_t *)P2V(identify_ns_phys);
@@ -439,13 +444,13 @@ void nvme_init(void)
 
     if (!sectors || flbas > nlbaf) {
         console_puts("NVMe: namespace sin formato LBA valido\n");
-        return;
+        goto init_fail_controller;
     }
 
     uint8_t lbads = ns[128 + (unsigned)flbas * 4 + 2];
     if (lbads < 9 || lbads > 16) {
         console_puts("NVMe: tamaño LBA no soportado\n");
-        return;
+        goto init_fail_controller;
     }
 
     uint32_t sector_size = 1u << lbads;
@@ -458,7 +463,7 @@ void nvme_init(void)
 
     if (sector_size > NVME_PAGE_SIZE) {
         console_puts("NVMe: lectura omitida; sector mayor que 4 KiB\n");
-        return;
+        goto init_fail_controller;
     }
 
     nvme_sector_count = sectors;
@@ -474,7 +479,7 @@ void nvme_init(void)
 
     if (submit(admin, &cmd) != 0) {
         console_puts("NVMe: Create I/O CQ fallo\n");
-        return;
+        goto init_fail_controller;
     }
 
     command_init(admin, &cmd, NVME_OP_CREATE_SQ, 0);
@@ -484,7 +489,7 @@ void nvme_init(void)
 
     if (submit(admin, &cmd) != 0) {
         console_puts("NVMe: Create I/O SQ fallo\n");
-        return;
+        goto init_fail_controller;
     }
 
     /* Read de un bloque lógico en SLBA=0. NLB=0 significa un bloque. */
@@ -496,7 +501,7 @@ void nvme_init(void)
 
     if (submit(&nvme_ioq, &cmd) != 0) {
         console_puts("NVMe: lectura de LBA 0 fallo\n");
-        return;
+        goto init_fail_controller;
     }
 
     uint8_t *data = (uint8_t *)P2V(data_phys);
@@ -536,6 +541,33 @@ void nvme_init(void)
 #elif defined(NVME_TEST_PERSIST)
     nvme_selftest_persist();
 #endif
+
+    return; /* Inicialización exitosa: no entrar en la recuperación. */
+
+init_fail_controller:
+    nvme_ready = 0;
+
+    /*
+     * No liberar páginas DMA mientras el controlador pueda usarlas.
+     * Solo las devolvemos al PMM si confirma CSTS.RDY=0 sin error.
+     */
+    reg_write32(NVME_REG_CC, 0);
+    if (wait_ready(0) == 0) {
+        for (unsigned j = 0; j < allocated; j++)
+            pmm_free_page(dma[j]);
+
+        nvme_data_phys = 0;
+        nvme_sector_count = 0;
+        nvme_sector_size = 0;
+
+        console_puts("NVMe: inicializacion abortada; controlador detenido "
+                     "y paginas DMA liberadas\n");
+    } else {
+        console_puts("NVMe: no se pudo confirmar la parada; paginas DMA "
+                     "retenidas por seguridad\n");
+    }
+    return;
+
 }
 
 
