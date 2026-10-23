@@ -456,11 +456,13 @@ static int user_path(char *out, uint64_t src)
 /* tmpfs primero, despues initramfs */
 static struct file *open_any(const char *p)
 {
+    if (fat32_handles_path(p))
+        return fat32_open(p);
+
     int e = 0;
     struct file *f = tmpfs_open(p, 0, &e);
     if (f) return f;
-    f = initramfs_open(p);
-    return f ? f : fat32_open(p);
+    return initramfs_open(p);
 }
 
 static uint64_t do_open(uint64_t upath, uint64_t flags)
@@ -473,7 +475,7 @@ static uint64_t do_open(uint64_t upath, uint64_t flags)
     struct file *f;
     if (!wr) {
         f = open_any(p);
-    } else if (!tmpfs_exists(p) && fat32_handles_path(p)) {
+    } else if (fat32_handles_path(p)) {
         int err = 0;
         f = fat32_open_flags(p, (int)flags, &err);
         if (!f) return ERR(err ? err : EROFS);

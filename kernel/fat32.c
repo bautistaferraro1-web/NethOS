@@ -36,6 +36,11 @@ struct fat_volume {
     uint64_t data_start;
     uint32_t active_fat;
     int fat_mirroring;
+    uint32_t fsinfo_sector;
+    uint32_t backup_boot_sector;
+    uint32_t free_count;
+    uint32_t next_free;
+    int fsinfo_valid;
 };
 
 struct fat_node {
@@ -68,6 +73,13 @@ static uint32_t le32(const uint8_t *p)
          | ((uint32_t)p[1] << 8)
          | ((uint32_t)p[2] << 16)
          | ((uint32_t)p[3] << 24);
+}
+
+static int fsinfo_signatures_valid(const uint8_t *b)
+{
+    return le32(b) == 0x41615252u &&
+           le32(b + 484) == 0x61417272u &&
+           le32(b + 508) == 0xAA550000u;
 }
 
 static void copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t n)
@@ -311,7 +323,7 @@ static int disk_path(const char *path, const char **relative)
 int fat32_handles_path(const char *path)
 {
     const char *relative;
-    return vol.mounted && path && disk_path(path, &relative);
+    return path == 0 ? 0 : disk_path(path, &relative);
 }
 
 /* Resuelve una ruta FAT usando nombres cortos 8.3. */
@@ -608,6 +620,122 @@ static int write_sector(uint64_t relative, const uint8_t *buffer)
 }
 
 /* Actualiza la entrada FAT en las copias que corresponda. */
+
+static int write_fsinfo_sector(uint32_t relative)
+{
+    uint8_t b[FAT_SECTOR_MAX];
+
+    if (relative >= vol.reserved_sectors ||
+        read_sector(relative, b) != 0 ||
+        !fsinfo_signatures_valid(b))
+        return -1;
+
+    put_le32(b + 488, vol.free_count);
+    put_le32(b + 492, vol.next_free);
+
+    return write_sector(relative, b);
+}
+
+static int sync_fsinfo(void)
+{
+    if (!vol.fsinfo_valid)
+        return 0;
+
+    if (vol.fsinfo_sector == 0 ||
+        vol.fsinfo_sector >= vol.reserved_sectors)
+        return -1;
+
+    if (write_fsinfo_sector(vol.fsinfo_sector) != 0)
+        return -1;
+
+    /*
+     * La FSInfo de respaldo suele estar en
+     * backup_boot_sector + fsinfo_sector.
+     * Solo la modificamos si está en la región reservada
+     * y conserva las firmas correctas.
+     */
+    if (vol.backup_boot_sector != 0 &&
+        vol.backup_boot_sector != 0xFFFFu &&
+        vol.backup_boot_sector < vol.reserved_sectors &&
+        vol.fsinfo_sector <
+            vol.reserved_sectors - vol.backup_boot_sector) {
+
+        uint32_t backup_info =
+            vol.backup_boot_sector + vol.fsinfo_sector;
+
+        if (backup_info != vol.fsinfo_sector) {
+            uint8_t b[FAT_SECTOR_MAX];
+
+            if (read_sector(backup_info, b) == 0 &&
+                fsinfo_signatures_valid(b)) {
+
+                put_le32(b + 488, vol.free_count);
+                put_le32(b + 492, vol.next_free);
+
+                if (write_sector(backup_info, b) != 0)
+                    return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+/* Cuenta las entradas libres de la FAT activa, no las de FSInfo. */
+static int recount_fat_free(uint32_t *free_out, uint32_t *hint_out)
+{
+    uint8_t buffer[FAT_SECTOR_MAX];
+
+    if (!free_out || !hint_out || !vol.sector_size ||
+        vol.sector_size > FAT_SECTOR_MAX)
+        return -1;
+
+    uint32_t sectors_per_read = FAT_SECTOR_MAX / vol.sector_size;
+    uint32_t free_count = 0;
+    uint32_t first_free = 0;
+    uint32_t offset = 0;
+
+    while (offset < vol.fat_size) {
+        uint32_t count = vol.fat_size - offset;
+        if (count > sectors_per_read)
+            count = sectors_per_read;
+
+        uint64_t relative = vol.fat_start + offset;
+
+        if (relative >= vol.total_sectors ||
+            count > vol.total_sectors - relative ||
+            vol.start_lba > UINT64_MAX - relative)
+            return -1;
+
+        if (block_read(vol.device, vol.start_lba + relative,
+                       count, buffer) != 0)
+            return -1;
+
+        uint32_t bytes = count * vol.sector_size;
+        uint64_t byte_base = (uint64_t)offset * vol.sector_size;
+
+        for (uint32_t pos = 0; pos + 4 <= bytes; pos += 4) {
+            uint64_t index = (byte_base + pos) / 4;
+
+            if (index < 2 ||
+                index > (uint64_t)vol.cluster_count + 1)
+                continue;
+
+            if ((le32(buffer + pos) & 0x0FFFFFFFu) == 0) {
+                free_count++;
+                if (!first_free)
+                    first_free = (uint32_t)index;
+            }
+        }
+
+        offset += count;
+    }
+
+    *free_out = free_count;
+    *hint_out = first_free ? first_free : 0xFFFFFFFFu;
+    return 0;
+}
+
 static int set_fat_entry(uint32_t cluster, uint32_t value)
 {
     if (!valid_cluster(cluster))
@@ -620,11 +748,20 @@ static int set_fat_entry(uint32_t cluster, uint32_t value)
     if (sector_index >= vol.fat_size)
         return -1;
 
+    /* Leer el estado anterior desde la FAT activa. */
+    uint8_t active_sector[FAT_SECTOR_MAX];
+
+    if (read_sector(vol.fat_start + sector_index, active_sector) != 0)
+        return -1;
+
+    uint32_t old_value =
+        le32(active_sector + byte_index) & 0x0FFFFFFFu;
+
     uint32_t first = vol.fat_mirroring ? 0 : vol.active_fat;
-    uint32_t end = vol.fat_mirroring ? vol.fats : vol.active_fat + 1;
+    uint32_t last = vol.fat_mirroring ? vol.fats : vol.active_fat + 1;
     uint8_t sector[FAT_SECTOR_MAX];
 
-    for (uint32_t f = first; f < end; f++) {
+    for (uint32_t f = first; f < last; f++) {
         uint64_t lba = (uint64_t)vol.reserved_sectors
                      + (uint64_t)f * vol.fat_size + sector_index;
 
@@ -639,6 +776,30 @@ static int set_fat_entry(uint32_t cluster, uint32_t value)
 
         if (write_sector(lba, sector) != 0)
             return -1;
+    }
+
+    int was_free = old_value == 0;
+    int now_free = (value & 0x0FFFFFFFu) == 0;
+
+    if (was_free != now_free) {
+        if (vol.free_count != 0xFFFFFFFFu) {
+            if (was_free) {
+                if (vol.free_count > 0)
+                    vol.free_count--;
+                else
+                    vol.free_count = 0xFFFFFFFFu;
+            } else if (vol.free_count < vol.cluster_count) {
+                vol.free_count++;
+            } else {
+                vol.free_count = 0xFFFFFFFFu;
+            }
+        }
+
+        /* El hint queda desconocido hasta el próximo recuento. */
+        vol.next_free = 0xFFFFFFFFu;
+
+        if (sync_fsinfo() != 0)
+            console_puts("FAT32: ADVERTENCIA: fallo al sincronizar FSInfo\n");
     }
 
     return 0;
@@ -1206,6 +1367,8 @@ static int try_mount(const struct partition_info *part,
     uint32_t ext_flags = le16(b + 40);
     uint32_t fs_version = le16(b + 42);
     uint32_t root = le32(b + 44) & 0x0FFFFFFFu;
+    uint32_t fsinfo_sector = le16(b + 48);
+    uint32_t backup_boot_sector = le16(b + 50);
 
     /* Solo FAT32; no interpretar FAT12/16 como si fuese FAT32. */
     if (bps != sector_size || root_entries != 0 ||
@@ -1260,7 +1423,27 @@ static int try_mount(const struct partition_info *part,
     vol.total_sectors = total;
     vol.fat_start = (uint64_t)reserved + (uint64_t)active_fat * fatsz32;
     vol.data_start = data_start;
+    vol.fsinfo_sector = fsinfo_sector;
+    vol.backup_boot_sector = backup_boot_sector;
+    vol.free_count = 0xFFFFFFFFu;
+    vol.next_free = 0xFFFFFFFFu;
+    vol.fsinfo_valid = 0;
     vol.mounted = 1;
+
+    if (fsinfo_sector > 0 && fsinfo_sector < reserved &&
+        fsinfo_sector != 0xFFFFu) {
+        uint8_t info[FAT_SECTOR_MAX];
+        if (read_sector(fsinfo_sector, info) == 0 &&
+            fsinfo_signatures_valid(info)) {
+            uint32_t fc = le32(info + 488);
+            uint32_t nf = le32(info + 492);
+            vol.fsinfo_valid = 1;
+            if (fc <= clusters)
+                vol.free_count = fc;
+            if (nf >= 2 && nf <= clusters + 1)
+                vol.next_free = nf;
+        }
+    }
 
     console_puts("FAT32: volumen valido encontrado\n");
     console_puts("FAT32: bytes/sector=");
@@ -1296,6 +1479,39 @@ void fat32_init(void)
             continue;
 
         if (try_mount(&part, sector_size) == 0) {
+#ifdef FAT32_ENABLE_WRITES
+            uint32_t actual_free = 0;
+            uint32_t actual_hint = 0;
+            uint32_t recorded_free = vol.free_count;
+
+            if (recount_fat_free(&actual_free, &actual_hint) == 0) {
+                if (vol.fsinfo_valid &&
+                    recorded_free != 0xFFFFFFFFu &&
+                    recorded_free != actual_free) {
+                    console_puts("FAT32: FSInfo desactualizado; guardado=");
+                    console_dec(recorded_free);
+                    console_puts(", real=");
+                    console_dec(actual_free);
+                    console_putc('\n');
+                }
+
+                vol.free_count = actual_free;
+                vol.next_free = actual_hint;
+
+                if (vol.fsinfo_valid) {
+                    if (sync_fsinfo() == 0)
+                        console_puts("FAT32: FSInfo sincronizado con la FAT\n");
+                    else
+                        console_puts("FAT32: ADVERTENCIA: fallo al guardar FSInfo\n");
+                } else {
+                    console_puts("FAT32: FSInfo no valido; no se modifica\n");
+                }
+            } else {
+                vol.free_count = 0xFFFFFFFFu;
+                vol.next_free = 0xFFFFFFFFu;
+                console_puts("FAT32: ADVERTENCIA: no se pudo recalcular espacio libre\n");
+            }
+#endif
             #ifdef FAT32_ENABLE_WRITES
             console_puts("FAT32: montado en /disk, ESCRITURA EXPERIMENTAL\n");
 #else
