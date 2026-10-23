@@ -78,6 +78,7 @@ static void nvme_selftest_persist(void);
 static void nvme_selftest_bounds(void);
 #endif
 
+
 static uint32_t reg_read32(uint32_t off)
 {
     return *(volatile uint32_t *)(nvme_regs + off);
@@ -529,6 +530,7 @@ void nvme_init(void)
     nvme_selftest_bounds();
 #endif
 
+
 #if defined(NVME_TEST_WRITES)
     nvme_selftest_write();
 #elif defined(NVME_TEST_PERSIST)
@@ -708,6 +710,7 @@ static void nvme_selftest_bounds(void)
     }
 }
 #endif
+
 
 int nvme_get_info(uint64_t *sector_count, uint32_t *sector_size)
 {
