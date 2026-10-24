@@ -189,10 +189,11 @@ int tmpfs_chown(const char *path, uint32_t uid, uint32_t gid,
     return 0;
 }
 
-int tmpfs_unlink(const char *path)
+int tmpfs_unlink(const char *path, uint32_t euid)
 {
     struct tnode *t = find(path);
     if (!t) return -2;
+    if (euid != 0 && euid != t->uid) return -1; /* EPERM: política conservadora */
     for (int i = 0; i < T_POOL; i++)
         if (pool[i].refcount > 0 && pool[i].priv == t) return -16;   /* EBUSY */
     if (t->data) { uint64_t g = irq_save(); kfree(t->data); irq_restore(g); }

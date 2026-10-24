@@ -686,16 +686,33 @@ static uint64_t sys_getcwd(uint64_t buf, uint64_t size)
     return len;
 }
 
-/* Sin directorios en el initramfs todavia: solo "/" es valido */
+/* Validar tipo y permiso de búsqueda sobre el directorio destino. */
 static uint64_t sys_chdir(uint64_t upath)
 {
     char p[PATH_MAX_K];
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
-    int d = initramfs_isdir(p);
-    if (d < 0) return ERR(ENOENT);
-    if (!d) return ERR(ENOTDIR);
+
+    struct file *f = open_any(p);
+    if (!f) return ERR(ENOENT);
+
+    uint8_t st[144] = {0};
+    if (!f->ops || !f->ops->stat || f->ops->stat(f, st) < 0) {
+        file_put(f);
+        return ERR(ENOTDIR);
+    }
+
+    uint32_t mode = *(uint32_t *)(st + 24);
+    if ((mode & 0170000u) != 0040000u) {
+        file_put(f);
+        return ERR(ENOTDIR);
+    }
+
+    int allowed = file_access_allowed(f, 1, 0); /* X: búsqueda */
+    file_put(f);
+    if (!allowed) return ERR(EACCES);
+
     char *cwd = task_proc()->cwd;
     int i = 0;
     while (p[i]) { cwd[i] = p[i]; i++; }
@@ -708,6 +725,7 @@ static uint64_t sys_getdents64(uint64_t fd, uint64_t buf, uint64_t count)
     struct file *f = cur_fd(fd);
     if (!f) return ERR(EBADF);
     if (!f->ops->getdents) return ERR(ENOTDIR);
+    if (!file_access_allowed(f, 4, 0)) return ERR(EACCES); /* R: listar */
     if (!user_range_ok(buf, count)) return ERR(EFAULT);
     return (uint64_t)f->ops->getdents(f, (void *)buf, count);
 }
@@ -931,6 +949,13 @@ static uint64_t sys_execve(uint64_t upath, uint64_t uargv, uint64_t uenvp, struc
         ev.envc++;
     }
     if (ev.envc == 0) env_default(&ev);
+
+    struct file *xf = initramfs_open(path);
+    if (!xf) return ERR(ENOENT);
+
+    int exec_allowed = file_access_allowed(xf, 1, 0);
+    file_put(xf);
+    if (!exec_allowed) return ERR(EACCES);
 
     const uint8_t *img = 0;
     uint64_t size = 0;
@@ -1343,7 +1368,7 @@ static uint64_t sys_unlink(uint64_t upath)
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
-    int rc = tmpfs_unlink(p);
+    int rc = tmpfs_unlink(p, task_proc()->euid);
     if (rc == -2) {
         struct file *f = initramfs_open(p);
         if (f) { file_put(f); return ERR(EROFS); }
