@@ -545,6 +545,97 @@ int nmain(int argc, char **argv)
         print("[ftest] directorios anidados y rutas relativas OK\n");
     }
 
+
+    {
+        const char *dir = "/tmp/ftest-dir-perm-check";
+        const char *child = "/tmp/ftest-dir-perm-check/probe";
+        unsigned char st[144];
+
+        print("[ftest] umask y permisos de busqueda...\n");
+
+        /* Limpiar residuos de una ejecución anterior. */
+        sys3(90, (long)dir, 0700, 0);
+        sys3(87, (long)child, 0, 0);
+        sys3(84, (long)dir, 0, 0);
+
+        long oldmask = sys3(95, 0077, 0, 0);
+        if (oldmask < 0) {
+            print("[ftest] umask FALLO\n");
+            return 1;
+        }
+
+        long rc = sys3(83, (long)dir, 0777, 0);
+        sys3(95, oldmask, 0, 0);
+
+        if (rc != 0) {
+            print("[ftest] mkdir con umask FALLO: ");
+            print_num((u64)-rc);
+            print("\n");
+            return 1;
+        }
+
+        if (sys3(4, (long)dir, (long)st, 0) != 0 ||
+            (*(uint32_t *)(st + 24) & 0777u) != 0700u) {
+            print("[ftest] mkdir no respeto umask 0077\n");
+            return 1;
+        }
+
+        long fd = sys3(2, (long)child, 0100 | 2 | 01000, 0600);
+        if (fd < 0) {
+            print("[ftest] crear archivo antes de retirar X FALLO\n");
+            sys3(84, (long)dir, 0, 0);
+            return 1;
+        }
+        sys3(3, fd, 0, 0);
+
+        if (sys3(90, (long)dir, 0600, 0) != 0) {
+            print("[ftest] chmod directorio FALLO\n");
+            sys3(87, (long)child, 0, 0);
+            sys3(84, (long)dir, 0, 0);
+            return 1;
+        }
+
+        fd = sys3(2, (long)child, 0, 0);
+        long euid = sys3(107, 0, 0, 0);
+
+        if (euid == 0) {
+            if (fd < 0) {
+                print("[ftest] root no puede atravesar directorio sin X\n");
+                return 1;
+            }
+            sys3(3, fd, 0, 0);
+        } else {
+            if (fd != -13) {
+                print("[ftest] abrir archivo sin X: esperaba EACCES\n");
+                if (fd >= 0) sys3(3, fd, 0, 0);
+                return 1;
+            }
+        }
+
+        if (sys3(90, (long)dir, 0700, 0) != 0) {
+            print("[ftest] restaurar permisos directorio FALLO\n");
+            return 1;
+        }
+
+        if (sys3(87, (long)child, 0, 0) != 0 ||
+            sys3(84, (long)dir, 0, 0) != 0) {
+            print("[ftest] limpiar prueba de permisos FALLO\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)"/", 0, 0) != -16) {
+            print("[ftest] rmdir / debería devolver EBUSY\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)"/hello.txt", 0, 0) != -20) {
+            print("[ftest] rmdir archivo debería devolver ENOTDIR\n");
+            return 1;
+        }
+
+        print("[ftest] umask, búsqueda y errores de rmdir OK\n");
+    }
+
     print("[ftest] todo OK\n");
     return 0;
 }
