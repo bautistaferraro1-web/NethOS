@@ -2,6 +2,12 @@
 #include "nlib.h"
 #include <stdint.h>
 
+static int ftest_name_eq(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
 int nmain(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -55,15 +61,42 @@ int nmain(int argc, char **argv)
     print("[ftest] ls /:\n");
     d = sys3(2, (long)"/", 0, 0);
     if (d < 0) { print("[ftest] open / FALLO\n"); return 1; }
-    n = sys3(217, d, (long)buf, sizeof buf);
-    if (n <= 0) { print("[ftest] getdents64 FALLO\n"); return 1; }
-    for (long off = 0; off < n; ) {
-        unsigned short rl = *(unsigned short *)(buf + off + 16);
-        print("  "); print(buf + off + 19); print("\n");
-        off += rl;
+
+    /* El directorio puede requerir varias lecturas de getdents64(). */
+    for (;;) {
+        n = sys3(217, d, (long)buf, sizeof buf);
+        if (n < 0) {
+            print("[ftest] getdents64 FALLO\n");
+            sys3(3, d, 0, 0);
+            return 1;
+        }
+        if (n == 0) break;
+
+        for (long off = 0; off < n; ) {
+            if (n - off < 19) {
+                print("[ftest] dirent truncado FALLO\n");
+                sys3(3, d, 0, 0);
+                return 1;
+            }
+
+            unsigned short rl = *(unsigned short *)(buf + off + 16);
+            if (rl < 20 || rl > n - off) {
+                print("[ftest] reclen invalido FALLO\n");
+                sys3(3, d, 0, 0);
+                return 1;
+            }
+
+            print("  ");
+            print(buf + off + 19);
+            print("\n");
+            off += rl;
+        }
     }
-    if (sys3(217, d, (long)buf, sizeof buf) != 0) { print("[ftest] getdents64 fin FALLO\n"); return 1; }
-    sys3(3, d, 0, 0);
+
+    if (sys3(3, d, 0, 0) != 0) {
+        print("[ftest] close directorio FALLO\n");
+        return 1;
+    }
     print("[ftest] cwd OK\n");
     {
         long me = sys3(39, 0, 0, 0), pp = sys3(110, 0, 0, 0);
@@ -235,6 +268,170 @@ int nmain(int argc, char **argv)
             }
             print("[ftest] creación como root en /etc OK\n");
         }
+    }
+
+
+    {
+        char dbuf[256];
+        unsigned char st[144];
+        const char *dir = "/tmp/ftest-dir";
+        const char *child = "/tmp/ftest-dir/child";
+
+        print("[ftest] mkdir/rmdir y listado tmpfs...\n");
+
+        long rc = sys3(83, (long)dir, 0755, 0);
+        if (rc != 0) {
+            print("[ftest] mkdir FALLO: ");
+            print_num((u64)-rc);
+            print("\n");
+            return 1;
+        }
+
+        if (sys3(83, (long)dir, 0755, 0) != -17) {
+            print("[ftest] mkdir repetido no devuelve EEXIST\n");
+            return 1;
+        }
+
+        if (sys3(4, (long)dir, (long)st, 0) != 0 ||
+            (*(uint32_t *)(st + 24) & 0170000u) != 0040000u) {
+            print("[ftest] stat del directorio FALLO\n");
+            return 1;
+        }
+
+        long fd = sys3(2, (long)child, 0100 | 2 | 01000, 0666);
+        if (fd < 0) {
+            print("[ftest] crear archivo hijo FALLO: ");
+            print_num((u64)-fd);
+            print("\n");
+            return 1;
+        }
+        if (sys3(3, fd, 0, 0) != 0) {
+            print("[ftest] close hijo FALLO\n");
+            return 1;
+        }
+
+        long d = sys3(2, (long)dir, 0, 0);
+        if (d < 0) {
+            print("[ftest] open directorio nuevo FALLO\n");
+            return 1;
+        }
+
+        int found_child = 0;
+        for (;;) {
+            long n = sys3(217, d, (long)dbuf, sizeof dbuf);
+            if (n < 0) {
+                print("[ftest] getdents directorio nuevo FALLO\n");
+                sys3(3, d, 0, 0);
+                return 1;
+            }
+            if (n == 0) break;
+
+            for (long off = 0; off < n; ) {
+                if (n - off < 19) {
+                    print("[ftest] dirent truncado FALLO\n");
+                    sys3(3, d, 0, 0);
+                    return 1;
+                }
+                unsigned short rl = *(unsigned short *)(dbuf + off + 16);
+                if (rl < 20 || rl > n - off) {
+                    print("[ftest] reclen invalido FALLO\n");
+                    sys3(3, d, 0, 0);
+                    return 1;
+                }
+                if (ftest_name_eq(dbuf + off + 19, "child"))
+                    found_child = 1;
+                off += rl;
+            }
+        }
+        sys3(3, d, 0, 0);
+
+        if (!found_child) {
+            print("[ftest] el hijo no aparece en getdents FALLO\n");
+            return 1;
+        }
+
+        d = sys3(2, (long)"/tmp", 0, 0);
+        if (d < 0) {
+            print("[ftest] open /tmp FALLO\n");
+            return 1;
+        }
+
+        int found_dir = 0;
+        for (;;) {
+            long n = sys3(217, d, (long)dbuf, sizeof dbuf);
+            if (n < 0) {
+                print("[ftest] getdents /tmp FALLO\n");
+                sys3(3, d, 0, 0);
+                return 1;
+            }
+            if (n == 0) break;
+
+            for (long off = 0; off < n; ) {
+                if (n - off < 19) {
+                    print("[ftest] dirent /tmp truncado FALLO\n");
+                    sys3(3, d, 0, 0);
+                    return 1;
+                }
+                unsigned short rl = *(unsigned short *)(dbuf + off + 16);
+                if (rl < 20 || rl > n - off) {
+                    print("[ftest] reclen /tmp invalido FALLO\n");
+                    sys3(3, d, 0, 0);
+                    return 1;
+                }
+                if (ftest_name_eq(dbuf + off + 19, "ftest-dir"))
+                    found_dir = 1;
+                off += rl;
+            }
+        }
+        sys3(3, d, 0, 0);
+
+        if (!found_dir) {
+            print("[ftest] /tmp no muestra el directorio creado FALLO\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)dir, 0, 0) != -39) {
+            print("[ftest] rmdir no rechaza directorio no vacio\n");
+            return 1;
+        }
+
+        if (sys3(87, (long)child, 0, 0) != 0) {
+            print("[ftest] unlink del hijo FALLO\n");
+            return 1;
+        }
+        if (sys3(84, (long)dir, 0, 0) != 0) {
+            print("[ftest] rmdir directorio vacio FALLO\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)"/tmp/no-such-dir", 0, 0) != -2) {
+            print("[ftest] rmdir inexistente no devuelve ENOENT\n");
+            return 1;
+        }
+
+        long euid = sys3(107, 0, 0, 0);
+        const char *etcdir = "/etc/ftest-mkdir-check";
+        rc = sys3(83, (long)etcdir, 0755, 0);
+
+        if (euid == 0) {
+            if (rc != 0) {
+                print("[ftest] root no puede crear directorio en /etc\n");
+                return 1;
+            }
+            if (sys3(84, (long)etcdir, 0, 0) != 0) {
+                print("[ftest] root no puede borrar directorio en /etc\n");
+                return 1;
+            }
+            print("[ftest] mkdir/rmdir como root en /etc OK\n");
+        } else {
+            if (rc != -13) {
+                print("[ftest] mkdir en /etc debio devolver EACCES\n");
+                return 1;
+            }
+            print("[ftest] mkdir en /etc denegado -> EACCES OK\n");
+        }
+
+        print("[ftest] mkdir/rmdir y getdents OK\n");
     }
 
     print("[ftest] todo OK\n");

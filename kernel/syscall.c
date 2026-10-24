@@ -1498,6 +1498,55 @@ static uint64_t sys_pipe2(uint64_t ufds, uint64_t flags)
     return 0;
 }
 
+
+static uint64_t sys_mkdir(uint64_t upath, uint64_t mode)
+{
+    char p[PATH_MAX_K];
+    int r = user_path(p, upath);
+    if (r == -1) return ERR(EFAULT);
+    if (r == -2) return ERR(ENAMETOOLONG);
+
+    int pe = check_path_parents(p);
+    if (pe) return ERR(pe);
+    if (fat32_handles_path(p)) return ERR(EROFS);
+
+    pe = check_parent_access(p);
+    if (pe) return ERR(pe);
+
+    struct proc *pr = task_proc();
+    int rc = tmpfs_mkdir_as(p, (uint32_t)mode,
+                            pr->euid, pr->egid, pr->umask);
+    return rc < 0 ? ERR(-rc) : 0;
+}
+
+static uint64_t sys_rmdir(uint64_t upath)
+{
+    char p[PATH_MAX_K];
+    int r = user_path(p, upath);
+    if (r == -1) return ERR(EFAULT);
+    if (r == -2) return ERR(ENAMETOOLONG);
+
+    if (!p[1]) return ERR(16); /* EBUSY: raíz */
+
+    const char *cwd = task_proc()->cwd;
+    int same = 1;
+    for (int i = 0; ; i++) {
+        if (p[i] != cwd[i]) { same = 0; break; }
+        if (!p[i]) break;
+    }
+    if (same) return ERR(16); /* EBUSY: cwd */
+
+    int pe = check_path_parents(p);
+    if (pe) return ERR(pe);
+    if (fat32_handles_path(p)) return ERR(EROFS);
+
+    pe = check_parent_access(p);
+    if (pe) return ERR(pe);
+
+    int rc = tmpfs_rmdir(p, task_proc()->euid);
+    return rc < 0 ? ERR(-rc) : 0;
+}
+
 static uint64_t sys_unlink(uint64_t upath)
 {
     char p[PATH_MAX_K];
@@ -1612,6 +1661,9 @@ void syscall_dispatch(struct regs *r)
     case 121: r->rax = sys_getpgid(r->rdi); break;
     case 112: r->rax = sys_setsid(); break;
     case 124: r->rax = sys_getsid(r->rdi); break;
+    case 83:  r->rax = sys_mkdir(r->rdi, r->rsi); break;
+    case 84:  r->rax = sys_rmdir(r->rdi); break;
+    case 258: r->rax = sys_mkdir(r->rsi, r->rdx); break; /* mkdirat: dirfd ignorado */
     case 87:  r->rax = sys_unlink(r->rdi); break;
     case 263: r->rax = sys_unlink(r->rsi); break;   /* unlinkat: dirfd ignorado */
     case 99:  r->rax = sys_sysinfo(r->rdi); break;
