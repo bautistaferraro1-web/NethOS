@@ -22,7 +22,7 @@ struct tnode {
     uint64_t size, cap;
     int used;
     uint32_t mode, uid, gid;
-    uint8_t is_dir, shadow;
+    uint8_t is_dir, shadow, whiteout;
 };
 
 static struct tnode nodes[T_MAX];
@@ -45,7 +45,17 @@ static struct tnode *find(const char *path)
     return 0;
 }
 
-int tmpfs_exists(const char *path) { return find(path) != 0; }
+int tmpfs_exists(const char *path)
+{
+    struct tnode *t = find(path);
+    return t != 0 && !t->whiteout;
+}
+
+int tmpfs_is_whiteout(const char *path)
+{
+    struct tnode *t = find(path);
+    return t != 0 && t->whiteout;
+}
 
 
 static uint64_t path_len(const char *s)
@@ -76,6 +86,7 @@ static struct tnode *node_alloc(const char *path, int is_dir, int shadow,
         t->gid = gid;
         t->is_dir = (uint8_t)(is_dir != 0);
         t->shadow = (uint8_t)(shadow != 0);
+        t->whiteout = 0;
         t->used = 1;
         return t;
     }
@@ -402,7 +413,7 @@ static int64_t t_getdents(struct file *f, void *buf, uint64_t n)
 
         struct tnode *child = &nodes[idx];
         const char *name = 0;
-        if (!child->used || child->shadow || child == t ||
+        if (!child->used || child->shadow || child->whiteout || child == t ||
             !direct_child(t->name, child->name, &name)) {
             cursor++;
             f->off = DIR_PHASE | cursor;
@@ -554,8 +565,23 @@ struct file *tmpfs_open_as(const char *path, int flags,
     if (idx < 0) { *err = 23; return 0; } /* ENFILE */
 
     struct tnode *t = find(path);
+    int replacing_whiteout = t && t->whiteout;
+    if (replacing_whiteout) {
+        if (!(flags & O_CREAT_)) { *err = 2; return 0; } /* ENOENT */
+        /* El nombre estaba eliminado: O_CREAT|O_EXCL debe poder recrearlo. */
+        t->whiteout = 0;
+        t->is_dir = 0;
+        t->shadow = 0;
+        t->data = 0;
+        t->size = 0;
+        t->cap = 0;
+        t->mode = S_IFREG_ | ((mode & 0777u) & ~(mask & 0777u));
+        t->uid = uid;
+        t->gid = gid;
+    }
+
     if (t) {
-        if ((flags & O_CREAT_) && (flags & O_EXCL_)) {
+        if (!replacing_whiteout && (flags & O_CREAT_) && (flags & O_EXCL_)) {
             *err = 17;
             return 0; /* EEXIST */
         }
@@ -649,8 +675,6 @@ int tmpfs_chown(const char *path, uint32_t uid, uint32_t gid,
 
     return 0;
 }
-
-
 int tmpfs_mkdir_as(const char *raw, uint32_t mode,
                    uint32_t uid, uint32_t gid, uint32_t mask)
 {
@@ -659,16 +683,35 @@ int tmpfs_mkdir_as(const char *raw, uint32_t mode,
 
     if (!len) return -17;       /* EEXIST: raíz */
     if (len >= T_NAME) return -36;
-    if (find(path)) return -17;
 
-    struct file *base = initramfs_open(path);
-    if (base) {
-        file_put(base);
-        return -17;             /* EEXIST */
+    struct tnode *old = find(path);
+    int replacing_whiteout = old && old->whiteout;
+    if (old && !replacing_whiteout) return -17;
+
+    if (!replacing_whiteout) {
+        struct file *base = initramfs_open(path);
+        if (base) {
+            file_put(base);
+            return -17;         /* EEXIST */
+        }
     }
 
     int rc = ensure_parent_dirs(path);
     if (rc < 0) return rc;
+
+    if (replacing_whiteout) {
+        old->data = 0;
+        old->size = 0;
+        old->cap = 0;
+        old->mode = S_IFDIR_ | ((mode & 0777u) & ~(mask & 0777u));
+        old->uid = uid;
+        old->gid = gid;
+        old->is_dir = 1;
+        old->shadow = 0;
+        old->whiteout = 0;
+        old->used = 1;
+        return 0;
+    }
 
     struct tnode *t = node_alloc(
         path, 1, 0,
@@ -727,17 +770,71 @@ int tmpfs_rmdir(const char *raw, uint32_t euid)
     t->shadow = 0;
     return 0;
 }
-
-int tmpfs_unlink(const char *path, uint32_t euid)
+int tmpfs_unlink(const char *raw, uint32_t euid)
 {
+    const char *path = norm(raw);
     struct tnode *t = find(path);
-    if (!t) return -2;
+
+    if (t && t->whiteout) return -2; /* ENOENT: ya está oculto */
+
+    if (!t) {
+        int raw_regular = initramfs_is_regular_nofollow(path);
+        if (raw_regular != 1) {
+            if (raw_regular == 0) {
+                int isdir = initramfs_isdir(path);
+                if (isdir == 1) return -21; /* EISDIR */
+                struct file *other = initramfs_open(path);
+                if (other) {
+                    file_put(other);
+                    return -30; /* EROFS: symlink/tipo todavía no soportado */
+                }
+            }
+            return -2; /* ENOENT */
+        }
+
+        int prc = ensure_parent_dirs(path);
+        if (prc < 0) return prc;
+        t = node_alloc(path, 0, 0, 0, 0, 0);
+        if (!t) return -28; /* ENOSPC */
+        t->whiteout = 1;
+        return 0;
+    }
+
     if (t->is_dir) return -21;  /* EISDIR */
     if (t->shadow) return -30;  /* EROFS */
-    if (euid != 0 && euid != t->uid) return -1; /* EPERM: política conservadora */
+    if (euid != 0 && euid != t->uid) return -1; /* EPERM */
+
     for (int i = 0; i < T_POOL; i++)
-        if (pool[i].refcount > 0 && pool[i].priv == t) return -16;   /* EBUSY */
-    if (t->data) { uint64_t g = irq_save(); kfree(t->data); irq_restore(g); }
-    t->data = 0; t->size = 0; t->cap = 0; t->used = 0; t->name[0] = 0;
+        if (pool[i].refcount > 0 && pool[i].priv == t)
+            return -16;         /* EBUSY: política actual para archivos abiertos */
+
+    if (t->data) {
+        uint64_t g = irq_save();
+        kfree(t->data);
+        irq_restore(g);
+    }
+    t->data = 0;
+    t->size = 0;
+    t->cap = 0;
+
+    if (initramfs_is_regular_nofollow(path) == 1) {
+        /* La entrada inferior sigue existiendo: reemplazar el upper por whiteout. */
+        t->mode = 0;
+        t->uid = 0;
+        t->gid = 0;
+        t->is_dir = 0;
+        t->shadow = 0;
+        t->whiteout = 1;
+        return 0;
+    }
+
+    t->used = 0;
+    t->name[0] = 0;
+    t->mode = 0;
+    t->uid = 0;
+    t->gid = 0;
+    t->is_dir = 0;
+    t->shadow = 0;
+    t->whiteout = 0;
     return 0;
 }

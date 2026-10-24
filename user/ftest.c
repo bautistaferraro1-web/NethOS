@@ -940,18 +940,20 @@ int nmain(int argc, char **argv)
             }
 
             /*
-             * unlink comprueba primero los permisos del directorio padre:
-             * root recibe EROFS; el usuario sin escritura en /etc recibe EACCES.
+             * Con whiteouts, root puede ocultar archivos regulares del initramfs.
+             * No ocultamos hostname aquí porque getdents lo comprueba más abajo;
+             * la prueba dedicada de whiteout se hace sobre /hello.txt al final.
+             * El usuario sin privilegios sigue recibiendo EACCES por el padre.
              */
-            long urc = sys3(87, (long)base_file, 0, 0);
             long uid = sys3(107, 0, 0, 0);
-            long want = uid == 0 ? -30 : -13;
-
-            if (urc != want) {
-                print("[ftest] unlink del archivo base devolvió error inesperado: ");
-                print_num((u64)-urc);
-                print("\n");
-                return 1;
+            if (uid != 0) {
+                long urc = sys3(87, (long)base_file, 0, 0);
+                if (urc != -13) {
+                    print("[ftest] unlink del archivo base debería dar EACCES: ");
+                    print_num((u64)-urc);
+                    print("\n");
+                    return 1;
+                }
             }
 
             print("[ftest] archivo base intacto y metadatos coherentes OK\n");
@@ -1030,6 +1032,103 @@ int nmain(int argc, char **argv)
             print("[ftest] entradas initramfs + tmpfs visibles OK\n");
         } else {
             print("[ftest] entradas originales del initramfs visibles OK\n");
+        }
+    }
+
+    {
+        long euid = sys3(107, 0, 0, 0);
+        if (euid == 0) {
+            const char *path = "/hello.txt";
+            char saved[256], check[256], dents[256];
+            unsigned char st[144];
+            long fd = sys3(2, (long)path, 0, 0);
+            if (fd < 0) {
+                print("[ftest] whiteout: abrir hello.txt FALLO\n");
+                return 1;
+            }
+            long saved_n = sys3(0, fd, (long)saved, sizeof saved);
+            long cc = sys3(3, fd, 0, 0);
+            if (cc != 0 || saved_n <= 0 || saved_n >= (long)sizeof saved) {
+                print("[ftest] whiteout: guardar hello.txt FALLO\n");
+                return 1;
+            }
+
+            long urc = sys3(87, (long)path, 0, 0);
+            if (urc != 0) {
+                print("[ftest] whiteout: unlink del archivo base FALLO: ");
+                print_num((u64)-urc);
+                print("\n");
+                return 1;
+            }
+
+            int ok = 1;
+            fd = sys3(2, (long)path, 0, 0);
+            if (fd != -2) {
+                ok = 0;
+                if (fd >= 0) sys3(3, fd, 0, 0);
+            }
+            if (sys3(4, (long)path, (long)st, 0) != -2)
+                ok = 0;
+            if (sys3(87, (long)path, 0, 0) != -2)
+                ok = 0; /* Segundo unlink debe devolver ENOENT. */
+
+            int seen = 0;
+            long d = sys3(2, (long)"/", 0, 0);
+            if (d < 0) {
+                ok = 0;
+            } else {
+                for (;;) {
+                    long n = sys3(217, d, (long)dents, sizeof dents);
+                    if (n < 0) { ok = 0; break; }
+                    if (n == 0) break;
+                    long off = 0;
+                    while (off < n) {
+                        if (n - off < 19) { ok = 0; break; }
+                        unsigned char *r = (unsigned char *)dents + off;
+                        unsigned short rl = *(unsigned short *)(r + 16);
+                        if (rl < 20 || rl > (unsigned long)(n - off)) {
+                            ok = 0;
+                            break;
+                        }
+                        if (ftest_name_eq((const char *)(r + 19), "hello.txt"))
+                            seen++;
+                        off += rl;
+                    }
+                    if (!ok) break;
+                }
+                if (sys3(3, d, 0, 0) != 0) ok = 0;
+            }
+            if (seen != 0) ok = 0;
+
+            /* Restaurar una copia visible para que ftest pueda repetirse. */
+            fd = sys3(2, (long)path, 0100 | 0200 | 1, 0644);
+            if (fd < 0) {
+                print("[ftest] whiteout: no se pudo restaurar hello.txt\n");
+                return 1;
+            }
+            long wr = sys3(1, fd, (long)saved, (uint64_t)saved_n);
+            cc = sys3(3, fd, 0, 0);
+            if (wr != saved_n || cc != 0) {
+                print("[ftest] whiteout: restaurar hello.txt FALLO\n");
+                return 1;
+            }
+
+            fd = sys3(2, (long)path, 0, 0);
+            if (fd < 0) {
+                print("[ftest] whiteout: reabrir hello.txt restaurado FALLO\n");
+                return 1;
+            }
+            long got = sys3(0, fd, (long)check, sizeof check);
+            cc = sys3(3, fd, 0, 0);
+            if (cc != 0 || got != saved_n) ok = 0;
+            for (long i = 0; i < saved_n && i < got; i++)
+                if (check[i] != saved[i]) ok = 0;
+
+            if (!ok) {
+                print("[ftest] whiteout, getdents o restauracion FALLO\n");
+                return 1;
+            }
+            print("[ftest] whiteouts, getdents y recreacion OK\n");
         }
     }
 

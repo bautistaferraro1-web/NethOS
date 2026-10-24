@@ -542,6 +542,10 @@ static struct file *open_any(const char *p)
     if (fat32_handles_path(p))
         return fat32_open(p);
 
+    /* Un whiteout significa que la capa inferior no es visible. */
+    if (tmpfs_is_whiteout(p))
+        return 0;
+
     int e = 0;
     struct file *f = tmpfs_open(p, 0, &e);
     if (f) return f;
@@ -1581,6 +1585,7 @@ static uint64_t sys_unlink(uint64_t upath)
 
     int rc = tmpfs_unlink(p, task_proc()->euid);
     if (rc == -2) {
+        if (tmpfs_is_whiteout(p)) return ERR(ENOENT);
         struct file *f = initramfs_open(p);
         if (f) { file_put(f); return ERR(EROFS); }
         return ERR(ENOENT);

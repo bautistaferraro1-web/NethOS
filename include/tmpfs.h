@@ -8,6 +8,8 @@ struct file *tmpfs_open_as(const char *path, int flags,
                             uint32_t mode, uint32_t uid, uint32_t gid,
                             uint32_t mask, int *err);
 int tmpfs_exists(const char *path);
+/* 1 si la ruta está ocultada por un whiteout del overlay. */
+int tmpfs_is_whiteout(const char *path);
 int tmpfs_chmod(const char *path, uint32_t mode, uint32_t euid);
 int tmpfs_chown(const char *path, uint32_t uid, uint32_t gid,
                 uint32_t euid);
