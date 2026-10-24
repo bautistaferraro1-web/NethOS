@@ -628,8 +628,28 @@ int nmain(int argc, char **argv)
             return 1;
         }
 
-        if (sys3(84, (long)"/hello.txt", 0, 0) != -20) {
+        const char *regular = "/tmp/ftest-rmdir-file-check";
+        long rfd = sys3(2, (long)regular, 0100 | 2 | 01000, 0600);
+
+        if (rfd < 0) {
+            print("[ftest] crear archivo para rmdir FALLO\n");
+            return 1;
+        }
+
+        if (sys3(3, rfd, 0, 0) != 0) {
+            sys3(87, (long)regular, 0, 0);
+            print("[ftest] cerrar archivo para rmdir FALLO\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)regular, 0, 0) != -20) {
+            sys3(87, (long)regular, 0, 0);
             print("[ftest] rmdir archivo debería devolver ENOTDIR\n");
+            return 1;
+        }
+
+        if (sys3(87, (long)regular, 0, 0) != 0) {
+            print("[ftest] limpiar archivo de prueba FALLO\n");
             return 1;
         }
 
