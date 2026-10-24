@@ -743,6 +743,87 @@ int nmain(int argc, char **argv)
 
         print("[ftest] integracion initramfs + tmpfs...\n");
 
+        /* Copy-up de un archivo base: modificar el overlay y restaurar sus bytes. */
+        if (euid == 0) {
+            const char *path = "/hello.txt";
+            char saved[256];
+            char verify[256];
+            const char changed[] = "COPYUP";
+            long h = sys3(2, (long)path, 0, 0);
+            if (h < 0) {
+                print("[ftest] abrir archivo base para copy-up FALLO\n");
+                return 1;
+            }
+            long saved_n = sys3(0, h, (long)saved, sizeof saved);
+            long close_rc = sys3(3, h, 0, 0);
+            if (close_rc != 0 || saved_n <= 0 || saved_n >= (long)sizeof saved) {
+                print("[ftest] guardar contenido para copy-up FALLO\n");
+                return 1;
+            }
+
+            h = sys3(2, (long)path, 1, 0); /* O_WRONLY: dispara copy-up */
+            if (h < 0) {
+                print("[ftest] abrir copia para escritura FALLO\n");
+                return 1;
+            }
+            long wr = sys3(1, h, (long)changed, sizeof changed - 1);
+            close_rc = sys3(3, h, 0, 0);
+            if (wr != (long)(sizeof changed - 1) || close_rc != 0) {
+                print("[ftest] escritura de copy-up FALLO\n");
+                return 1;
+            }
+
+            h = sys3(2, (long)path, 0, 0);
+            if (h < 0) {
+                print("[ftest] reabrir copia superior FALLO\n");
+                return 1;
+            }
+            long changed_n = sys3(0, h, (long)verify, sizeof verify);
+            close_rc = sys3(3, h, 0, 0);
+            if (close_rc != 0 || changed_n < (long)(sizeof changed - 1)) {
+                print("[ftest] lectura de copia superior FALLO\n");
+                return 1;
+            }
+            for (unsigned i = 0; i < sizeof changed - 1; i++) {
+                if (verify[i] != changed[i]) {
+                    print("[ftest] lectura no ve los datos de copy-up\n");
+                    return 1;
+                }
+            }
+
+            h = sys3(2, (long)path, 1 | 01000, 0600); /* O_WRONLY | O_TRUNC */
+            if (h < 0) {
+                print("[ftest] O_TRUNC sobre copia superior FALLO\n");
+                return 1;
+            }
+            wr = sys3(1, h, (long)saved, (uint64_t)saved_n);
+            close_rc = sys3(3, h, 0, 0);
+            if (wr != saved_n || close_rc != 0) {
+                print("[ftest] restaurar contenido tras O_TRUNC FALLO\n");
+                return 1;
+            }
+
+            h = sys3(2, (long)path, 0, 0);
+            if (h < 0) {
+                print("[ftest] abrir archivo restaurado FALLO\n");
+                return 1;
+            }
+            long restored_n = sys3(0, h, (long)verify, sizeof verify);
+            close_rc = sys3(3, h, 0, 0);
+            if (close_rc != 0 || restored_n != saved_n) {
+                print("[ftest] tamaño restaurado incorrecto\n");
+                return 1;
+            }
+            for (long i = 0; i < saved_n; i++) {
+                if (verify[i] != saved[i]) {
+                    print("[ftest] contenido restaurado incorrecto\n");
+                    return 1;
+                }
+            }
+            print("[ftest] copy-up y restauración del archivo base OK\n");
+        }
+
+
         /*
          * Solo root crea la entrada: /etc no debe ser modificable
          * por el usuario normal. La entrada se elimina al terminar.
@@ -805,24 +886,6 @@ int nmain(int argc, char **argv)
                 print("[ftest] O_CREAT|O_EXCL sobre hostname debería dar EEXIST: ");
                 print_num((u64)-op_rc);
                 print("\n");
-                return 1;
-            }
-
-            long expected_write_open = euid == 0 ? -30 : -13;
-
-            op_rc = sys3(2, (long)base_file, 1, 0);
-            if (op_rc >= 0) sys3(3, op_rc, 0, 0);
-            if (op_rc == expected_write_open) {
-            } else {
-                print("[ftest] O_WRONLY devolvió un error inesperado\n");
-                return 1;
-            }
-
-            op_rc = sys3(2, (long)base_file, 1 | 01000, 0600);
-            if (op_rc >= 0) sys3(3, op_rc, 0, 0);
-            if (op_rc == expected_write_open) {
-            } else {
-                print("[ftest] O_TRUNC devolvió un error inesperado\n");
                 return 1;
             }
 

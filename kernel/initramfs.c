@@ -187,6 +187,18 @@ int initramfs_isdir(const char *path)
     return d;
 }
 
+int initramfs_is_regular_nofollow(const char *path)
+{
+    if (!inited) { parse(); inited = 1; }
+    if (!path) return -1;
+    while (path[0] == '/') path++;
+    while (path[0] == '.' && path[1] == '/') path += 2;
+    struct ent *e = find_ent(path);
+    if (!e) return -1;
+    return (e->mode & 0170000u) == 0100000u;
+}
+
+
 /* 0 ok; -1 no existe; -2 no es archivo regular */
 int initramfs_lookup(const char *path, const uint8_t **data, uint64_t *size)
 {

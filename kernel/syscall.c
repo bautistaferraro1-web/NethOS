@@ -706,10 +706,7 @@ static uint64_t do_open(uint64_t upath, uint64_t flags, uint64_t mode)
     if (!wr) {
         f = open_any(p);
     } else {
-        if (!tmpfs_exists(p)) {
-            struct file *ro = initramfs_open(p);
-            if (ro) { file_put(ro); return ERR(EROFS); }
-        }
+        /* tmpfs_open_as copia al overlay los archivos regulares del initramfs. */
         int err = 0;
         struct proc *pr = task_proc();
         f = tmpfs_open_as(p, (int)flags, (uint32_t)mode,
