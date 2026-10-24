@@ -731,6 +731,114 @@ int nmain(int argc, char **argv)
         print("[ftest] FAT32 permanece de solo lectura OK\n");
     }
 
+
+    {
+        const char *overlay = "/etc/ftest-overlay-check";
+        char dbuf[256];
+        long euid = sys3(107, 0, 0, 0);
+
+        int found_hostname = 0;
+        int found_overlay = 0;
+        long fd = -1;
+
+        print("[ftest] integracion initramfs + tmpfs...\n");
+
+        /*
+         * Solo root crea la entrada: /etc no debe ser modificable
+         * por el usuario normal. La entrada se elimina al terminar.
+         */
+        if (euid == 0) {
+            fd = sys3(2, (long)overlay, 0100 | 2 | 01000, 0600);
+            if (fd < 0) {
+                print("[ftest] crear entrada overlay FALLO: ");
+                print_num((u64)-fd);
+                print("\n");
+                return 1;
+            }
+
+            if (sys3(3, fd, 0, 0) != 0) {
+                sys3(87, (long)overlay, 0, 0);
+                print("[ftest] cerrar entrada overlay FALLO\n");
+                return 1;
+            }
+        }
+
+        long d = sys3(2, (long)"/etc", 0, 0);
+        if (d < 0) {
+            if (euid == 0) sys3(87, (long)overlay, 0, 0);
+            print("[ftest] abrir /etc FALLO\n");
+            return 1;
+        }
+
+        for (;;) {
+            long n = sys3(217, d, (long)dbuf, sizeof dbuf);
+
+            if (n < 0) {
+                sys3(3, d, 0, 0);
+                if (euid == 0) sys3(87, (long)overlay, 0, 0);
+                print("[ftest] getdents /etc FALLO\n");
+                return 1;
+            }
+
+            if (n == 0) break;
+
+            for (long off = 0; off < n; ) {
+                if (n - off < 19) {
+                    sys3(3, d, 0, 0);
+                    if (euid == 0) sys3(87, (long)overlay, 0, 0);
+                    print("[ftest] dirent /etc truncado FALLO\n");
+                    return 1;
+                }
+
+                unsigned short rl = *(unsigned short *)(dbuf + off + 16);
+                if (rl < 20 || rl > n - off) {
+                    sys3(3, d, 0, 0);
+                    if (euid == 0) sys3(87, (long)overlay, 0, 0);
+                    print("[ftest] reclen /etc invalido FALLO\n");
+                    return 1;
+                }
+
+                const char *name = dbuf + off + 19;
+
+                if (ftest_name_eq(name, "hostname"))
+                    found_hostname = 1;
+
+                if (ftest_name_eq(name, "ftest-overlay-check"))
+                    found_overlay = 1;
+
+                off += rl;
+            }
+        }
+
+        if (sys3(3, d, 0, 0) != 0) {
+            if (euid == 0) sys3(87, (long)overlay, 0, 0);
+            print("[ftest] cerrar /etc FALLO\n");
+            return 1;
+        }
+
+        if (!found_hostname) {
+            if (euid == 0) sys3(87, (long)overlay, 0, 0);
+            print("[ftest] el overlay oculto perdio hostname del initramfs\n");
+            return 1;
+        }
+
+        if (euid == 0 && !found_overlay) {
+            sys3(87, (long)overlay, 0, 0);
+            print("[ftest] getdents /etc no muestra el archivo tmpfs\n");
+            return 1;
+        }
+
+        if (euid == 0) {
+            if (sys3(87, (long)overlay, 0, 0) != 0) {
+                print("[ftest] limpiar archivo overlay FALLO\n");
+                return 1;
+            }
+            print("[ftest] entradas initramfs + tmpfs visibles OK\n");
+        } else {
+            print("[ftest] entradas originales del initramfs visibles OK\n");
+        }
+    }
+
     print("[ftest] todo OK\n");
     return 0;
 }
