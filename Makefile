@@ -165,7 +165,7 @@ initrd/bin/poweroff: build/poweroff.elf
 
 build/initramfs.cpio: $(shell find initrd \( -type f -o -type l \)) Makefile initrd/bin/reboot initrd/bin/poweroff
 >mkdir -p build
->cd initrd && find . -mindepth 1 | cpio -o -H newc --owner=0:0 --quiet > ../build/initramfs.cpio
+>cd initrd && chmod 1777 tmp && find . -mindepth 1 | cpio -o -H newc --owner=0:0 --quiet > ../build/initramfs.cpio
 
 build/initramfs_cpio.o: build/initramfs.cpio
 >cd build && ld -r -b binary -z noexecstack -o initramfs_cpio.o initramfs.cpio

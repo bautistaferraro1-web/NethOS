@@ -1,5 +1,6 @@
 #define NLIB_MAIN
 #include "nlib.h"
+#include <stdint.h>
 
 int nmain(int argc, char **argv)
 {
@@ -172,6 +173,68 @@ int nmain(int argc, char **argv)
 
         sys3(3, fd, 0, 0);
         print("[ftest] prueba de metadatos OK\n");
+    }
+
+
+    {
+        unsigned char st[144];
+        print("[ftest] permisos de ruta y directorios...\n");
+
+        if (sys3(4, (long)"/tmp", (long)st, 0) != 0 ||
+            ((*(uint32_t *)(st + 24)) & 07777u) != 01777u) {
+            print("[ftest] /tmp no tiene modo 1777 FALLO\n");
+            return 1;
+        }
+
+        long fd = sys3(2, (long)"/hello.txt/hijo", 0, 0);
+        if (fd != -20) {
+            print("[ftest] componente no directorio: esperaba ENOTDIR\n");
+            if (fd >= 0) sys3(3, fd, 0, 0);
+            return 1;
+        }
+        print("[ftest] componente no directorio -> ENOTDIR OK\n");
+
+        fd = sys3(2, (long)"/tmp/ftest-parent-check",
+                  0100 | 2 | 01000, 0666);
+        if (fd < 0) {
+            print("[ftest] crear en /tmp FALLO: ");
+            print_num((u64)-fd);
+            print("\n");
+            return 1;
+        }
+        sys3(3, fd, 0, 0);
+        if (sys3(87, (long)"/tmp/ftest-parent-check", 0, 0) != 0) {
+            print("[ftest] borrar archivo propio en /tmp FALLO\n");
+            return 1;
+        }
+        print("[ftest] crear/borrar en /tmp OK\n");
+
+        long euid = sys3(107, 0, 0, 0);
+        fd = sys3(2, (long)"/etc/ftest-write-check",
+                  0100 | 2 | 01000, 0600);
+        if (euid != 0) {
+            if (fd != -13) {
+                print("[ftest] crear en /etc sin privilegios: esperaba EACCES\n");
+                if (fd >= 0) {
+                    sys3(3, fd, 0, 0);
+                }
+                return 1;
+            }
+            print("[ftest] creación en /etc denegada -> EACCES OK\n");
+        } else {
+            if (fd < 0) {
+                print("[ftest] root no pudo crear en /etc: ");
+                print_num((u64)-fd);
+                print("\n");
+                return 1;
+            }
+            sys3(3, fd, 0, 0);
+            if (sys3(87, (long)"/etc/ftest-write-check", 0, 0) != 0) {
+                print("[ftest] limpiar archivo de prueba en /etc FALLO\n");
+                return 1;
+            }
+            print("[ftest] creación como root en /etc OK\n");
+        }
     }
 
     print("[ftest] todo OK\n");

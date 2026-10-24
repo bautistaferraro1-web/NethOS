@@ -548,17 +548,110 @@ static struct file *open_any(const char *p)
     return initramfs_open(p);
 }
 
+/* Comprueba tipo y permisos de un directorio. Devuelve errno positivo o cero. */
+static int check_directory_access(const char *path, unsigned requested)
+{
+    struct file *f = open_any(path);
+    if (!f) return ENOENT;
+
+    uint8_t st[144] = {0};
+    if (!f->ops || !f->ops->stat || f->ops->stat(f, st) < 0) {
+        file_put(f);
+        return EIO;
+    }
+
+    uint32_t mode = *(uint32_t *)(st + 24);
+    if ((mode & 0170000u) != 0040000u) {
+        file_put(f);
+        return ENOTDIR;
+    }
+
+    int allowed = file_access_allowed(f, requested, 0);
+    file_put(f);
+    return allowed ? 0 : EACCES;
+}
+
+/* Busca permiso X en cada directorio padre de una ruta absoluta. */
+static int check_path_parents(const char *path)
+{
+    if (!path || path[0] != '/')
+        return EINVAL;
+
+    int rc = check_directory_access("/", 1);
+    if (rc) return rc;
+    if (path[1] == 0) return 0;
+
+    char prefix[PATH_MAX_K] = "/";
+    int plen = 1;
+    const char *p = path + 1;
+
+    while (*p) {
+        const char *start = p;
+        while (*p && *p != '/') p++;
+
+        /* El último componente es el objeto solicitado, no un directorio padre. */
+        if (!*p) break;
+
+        int n = (int)(p - start);
+        int sep = plen > 1 ? 1 : 0;
+        if (plen + sep + n >= PATH_MAX_K)
+            return 36; /* ENAMETOOLONG */
+
+        if (sep) prefix[plen++] = '/';
+        for (int i = 0; i < n; i++)
+            prefix[plen++] = start[i];
+        prefix[plen] = 0;
+
+        rc = check_directory_access(prefix, 1);
+        if (rc) return rc;
+
+        while (*p == '/') p++;
+    }
+
+    return 0;
+}
+
+/* Crear o borrar un nombre requiere escritura y búsqueda en el padre. */
+static int check_parent_access(const char *path)
+{
+    int last = -1;
+    for (int i = 0; path[i]; i++)
+        if (path[i] == '/') last = i;
+
+    if (last < 0) return EINVAL;
+
+    char parent[PATH_MAX_K];
+    if (last == 0) {
+        parent[0] = '/';
+        parent[1] = 0;
+    } else {
+        if (last >= PATH_MAX_K) return 36;
+        for (int i = 0; i < last; i++) parent[i] = path[i];
+        parent[last] = 0;
+    }
+
+    int rc = check_path_parents(parent);
+    if (rc) return rc;
+
+    return check_directory_access(parent, 3); /* W | X */
+}
+
 static uint64_t do_open(uint64_t upath, uint64_t flags, uint64_t mode)
 {
     char p[PATH_MAX_K];
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
+
+    int pe = check_path_parents(p);
+    if (pe) return ERR(pe);
+
     int acc = (int)(flags & 3);
     if (acc == 3) return ERR(EINVAL);
 
     /* O_CREAT | O_EXCL debe fallar si el nombre ya existe. */
     struct file *probe = open_any(p);
+    int exists = probe != 0;
     if (probe) {
         if ((flags & 0100) && (flags & 0200)) {
             file_put(probe);
@@ -572,6 +665,11 @@ static uint64_t do_open(uint64_t upath, uint64_t flags, uint64_t mode)
         file_put(probe);
 
         if (!allowed) return ERR(EACCES);
+    }
+
+    if (!exists && (flags & 0100)) {
+        int pe = check_parent_access(p);
+        if (pe) return ERR(pe);
     }
 
     int wr = (flags & 3) || (flags & 0100) || (flags & 01000);
@@ -617,6 +715,8 @@ static uint64_t sys_stat(uint64_t upath, uint64_t st)
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
+    int pe = check_path_parents(p);
+    if (pe) return ERR(pe);
     if (!user_range_ok(st, 144)) return ERR(EFAULT);
     struct file *f = open_any(p);
     if (!f) return ERR(ENOENT);
@@ -632,6 +732,8 @@ static uint64_t sys_chmod(uint64_t upath, uint64_t mode)
     int rc = user_path(path, upath);
     if (rc == -1) return ERR(EFAULT);
     if (rc == -2) return ERR(ENAMETOOLONG);
+    int pe = check_path_parents(path);
+    if (pe) return ERR(pe);
 
     struct proc *p = task_proc();
 
@@ -652,6 +754,8 @@ static uint64_t sys_chown(uint64_t upath, uint64_t uid, uint64_t gid)
     int rc = user_path(path, upath);
     if (rc == -1) return ERR(EFAULT);
     if (rc == -2) return ERR(ENAMETOOLONG);
+    int pe = check_path_parents(path);
+    if (pe) return ERR(pe);
 
     struct proc *p = task_proc();
 
@@ -712,6 +816,8 @@ static uint64_t sys_chdir(uint64_t upath)
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
+    int pe = check_path_parents(p);
+    if (pe) return ERR(pe);
 
     struct file *f = open_any(p);
     if (!f) return ERR(ENOENT);
@@ -934,6 +1040,9 @@ static uint64_t sys_execve(uint64_t upath, uint64_t uargv, uint64_t uenvp, struc
     int pr = user_path(path, upath);
     if (pr == -1) return ERR(EFAULT);
     if (pr == -2) return ERR(ENAMETOOLONG);
+
+    int pe = check_path_parents(path);
+    if (pe) return ERR(pe);
 
     while (uargv) {
         if (!user_range_ok(uargv + 8ULL * a.argc, 8)) return ERR(EFAULT);
@@ -1354,6 +1463,8 @@ static uint64_t sys_access(uint64_t upath, uint64_t mode)
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
+    int pe = check_path_parents(p);
+    if (pe) return ERR(pe);
 
     struct file *f = open_any(p);
     if (!f) return ERR(ENOENT);
@@ -1387,6 +1498,10 @@ static uint64_t sys_unlink(uint64_t upath)
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
+
+    int pe = check_parent_access(p);
+    if (pe) return ERR(pe);
+
     int rc = tmpfs_unlink(p, task_proc()->euid);
     if (rc == -2) {
         struct file *f = initramfs_open(p);
