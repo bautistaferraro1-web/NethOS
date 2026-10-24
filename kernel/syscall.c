@@ -655,6 +655,25 @@ static uint64_t do_open(uint64_t upath, uint64_t flags, uint64_t mode)
     int acc = (int)(flags & 3);
     if (acc == 3) return ERR(EINVAL);
 
+    /*
+     * En FAT32 de solo lectura, las operaciones que modifican el volumen
+     * deben devolver EROFS antes de comprobar permisos de escritura.
+     * Las aperturas de solo lectura siguen la comprobación normal.
+     */
+    if (fat32_handles_path(p) &&
+        ((flags & 3) || (flags & 0100) || (flags & 01000))) {
+        int err = 0;
+        struct file *ff = fat32_open_flags(p, (int)flags, &err);
+        if (!ff) return ERR(err ? err : EROFS);
+
+        int ffd = fd_install(task_proc()->fds, ff);
+        if (ffd < 0) {
+            file_put(ff);
+            return ERR(EMFILE);
+        }
+        return (uint64_t)ffd;
+    }
+
     /* O_CREAT | O_EXCL debe fallar si el nombre ya existe. */
     struct file *probe = open_any(p);
     int exists = probe != 0;
@@ -682,10 +701,6 @@ static uint64_t do_open(uint64_t upath, uint64_t flags, uint64_t mode)
     struct file *f;
     if (!wr) {
         f = open_any(p);
-    } else if (fat32_handles_path(p)) {
-        int err = 0;
-        f = fat32_open_flags(p, (int)flags, &err);
-        if (!f) return ERR(err ? err : EROFS);
     } else {
         if (!tmpfs_exists(p)) {
             struct file *ro = initramfs_open(p);

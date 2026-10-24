@@ -676,6 +676,30 @@ int nmain(int argc, char **argv)
             return 1;
         }
 
+        long orc = sys3(2, (long)file, 1, 0); /* O_WRONLY */
+        if (orc != -30) {
+            print("[ftest] open O_WRONLY FAT32 deberia devolver EROFS: ");
+            print_num((u64)-orc);
+            print("\n");
+            return 1;
+        }
+
+        orc = sys3(2, (long)file, 01000, 0); /* O_TRUNC */
+        if (orc != -30) {
+            print("[ftest] open O_TRUNC FAT32 deberia devolver EROFS: ");
+            print_num((u64)-orc);
+            print("\n");
+            return 1;
+        }
+
+        orc = sys3(2, (long)"/disk/NETHRANEW.TXT", 0100 | 1, 0644);
+        if (orc != -30) {
+            print("[ftest] open O_CREAT FAT32 deberia devolver EROFS: ");
+            print_num((u64)-orc);
+            print("\n");
+            return 1;
+        }
+
         long rc = sys3(87, (long)file, 0, 0);
         if (rc != -30) {
             print("[ftest] unlink FAT32 debería devolver EROFS: ");
