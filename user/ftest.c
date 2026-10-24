@@ -808,6 +808,64 @@ int nmain(int argc, char **argv)
                 return 1;
             }
 
+            long expected_write_open = euid == 0 ? -30 : -13;
+
+            op_rc = sys3(2, (long)base_file, 1, 0);
+            if (op_rc >= 0) sys3(3, op_rc, 0, 0);
+            if (op_rc == expected_write_open) {
+            } else {
+                print("[ftest] O_WRONLY devolvió un error inesperado\n");
+                return 1;
+            }
+
+            op_rc = sys3(2, (long)base_file, 1 | 01000, 0600);
+            if (op_rc >= 0) sys3(3, op_rc, 0, 0);
+            if (op_rc == expected_write_open) {
+            } else {
+                print("[ftest] O_TRUNC devolvió un error inesperado\n");
+                return 1;
+            }
+
+            op_rc = sys3(2, (long)base_file, 0100, 0644);
+            if (op_rc < 0) {
+                print("[ftest] O_CREAT sobre archivo existente falló\n");
+                return 1;
+            }
+
+            nr = sys3(0, op_rc, (long)dbuf, sizeof dbuf);
+            {
+                long cc = sys3(3, op_rc, 0, 0);
+                if (cc == 0 && nr >= 6 &&
+                    dbuf[0] == 'n' && dbuf[1] == 'e' &&
+                    dbuf[2] == 't' && dbuf[3] == 'h' &&
+                    dbuf[4] == 'r' && dbuf[5] == 'a') {
+                } else {
+                    print("[ftest] O_CREAT no conservó hostname\n");
+                    return 1;
+                }
+            }
+
+            op_rc = sys3(2, (long)"//etc//./hostname", 0, 0);
+            if (op_rc < 0) {
+                print("[ftest] ruta equivalente de hostname falló\n");
+                return 1;
+            }
+
+            nr = sys3(0, op_rc, (long)dbuf, sizeof dbuf);
+            {
+                long cc = sys3(3, op_rc, 0, 0);
+                if (cc == 0 && nr >= 6 &&
+                    dbuf[0] == 'n' && dbuf[1] == 'e' &&
+                    dbuf[2] == 't' && dbuf[3] == 'h' &&
+                    dbuf[4] == 'r' && dbuf[5] == 'a') {
+                } else {
+                    print("[ftest] ruta equivalente alteró hostname\n");
+                    return 1;
+                }
+            }
+
+            print("[ftest] O_CREAT, escritura y rutas equivalentes OK\n");
+
             if (sys3(90, (long)base_file, 0600, 0) != -30) {
                 print("[ftest] chmod del archivo base debería dar EROFS\n");
                 return 1;

@@ -697,7 +697,11 @@ static uint64_t do_open(uint64_t upath, uint64_t flags, uint64_t mode)
         if (pe) return ERR(pe);
     }
 
-    int wr = (flags & 3) || (flags & 0100) || (flags & 01000);
+    /*
+     * O_CREAT solo modifica el FS cuando el archivo no existe.
+     */
+    int wr = acc != 0 || (flags & 01000) != 0 ||
+             (exists == 0 && (flags & 0100) != 0);
     struct file *f;
     if (!wr) {
         f = open_any(p);
