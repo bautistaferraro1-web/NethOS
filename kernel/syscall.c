@@ -549,7 +549,7 @@ static struct file *open_any(const char *p)
 }
 
 /* Comprueba tipo y permisos de un directorio. Devuelve errno positivo o cero. */
-static int check_directory_access(const char *path, unsigned requested)
+static int check_directory_access(const char *path, unsigned requested, int real_ids)
 {
     struct file *f = open_any(path);
     if (!f) return ENOENT;
@@ -566,18 +566,18 @@ static int check_directory_access(const char *path, unsigned requested)
         return ENOTDIR;
     }
 
-    int allowed = file_access_allowed(f, requested, 0);
+    int allowed = file_access_allowed(f, requested, real_ids);
     file_put(f);
     return allowed ? 0 : EACCES;
 }
 
 /* Busca permiso X en cada directorio padre de una ruta absoluta. */
-static int check_path_parents(const char *path)
+static int check_path_parents_as(const char *path, int real_ids)
 {
     if (!path || path[0] != '/')
         return EINVAL;
 
-    int rc = check_directory_access("/", 1);
+    int rc = check_directory_access("/", 1, real_ids);
     if (rc) return rc;
     if (path[1] == 0) return 0;
 
@@ -602,13 +602,19 @@ static int check_path_parents(const char *path)
             prefix[plen++] = start[i];
         prefix[plen] = 0;
 
-        rc = check_directory_access(prefix, 1);
+        rc = check_directory_access(prefix, 1, real_ids);
         if (rc) return rc;
 
         while (*p == '/') p++;
     }
 
     return 0;
+}
+
+/* Por defecto, las operaciones normales usan credenciales efectivas. */
+static int check_path_parents(const char *path)
+{
+    return check_path_parents_as(path, 0);
 }
 
 /* Crear o borrar un nombre requiere escritura y búsqueda en el padre. */
@@ -633,7 +639,7 @@ static int check_parent_access(const char *path)
     int rc = check_path_parents(parent);
     if (rc) return rc;
 
-    return check_directory_access(parent, 3); /* W | X */
+    return check_directory_access(parent, 3, 0); /* W | X, IDs efectivos */
 }
 
 static uint64_t do_open(uint64_t upath, uint64_t flags, uint64_t mode)
@@ -1463,7 +1469,7 @@ static uint64_t sys_access(uint64_t upath, uint64_t mode)
     int r = user_path(p, upath);
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
-    int pe = check_path_parents(p);
+    int pe = check_path_parents_as(p, 1);
     if (pe) return ERR(pe);
 
     struct file *f = open_any(p);
