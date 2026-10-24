@@ -1554,7 +1554,13 @@ static uint64_t sys_unlink(uint64_t upath)
     if (r == -1) return ERR(EFAULT);
     if (r == -2) return ERR(ENAMETOOLONG);
 
-    int pe = check_parent_access(p);
+    int pe = check_path_parents(p);
+    if (pe) return ERR(pe);
+
+    /* FAT32 está montado en solo lectura: rechazar modificaciones. */
+    if (fat32_handles_path(p)) return ERR(EROFS);
+
+    pe = check_parent_access(p);
     if (pe) return ERR(pe);
 
     int rc = tmpfs_unlink(p, task_proc()->euid);

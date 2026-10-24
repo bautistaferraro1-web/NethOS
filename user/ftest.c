@@ -656,6 +656,57 @@ int nmain(int argc, char **argv)
         print("[ftest] umask, búsqueda y errores de rmdir OK\n");
     }
 
+
+    {
+        const char *file = "/disk/HELLO.TXT";
+
+        print("[ftest] FAT32 de solo lectura...\n");
+
+        /* Confirmar que el archivo conocido del volumen existe y se lee. */
+        long fd = sys3(2, (long)file, 0, 0);
+        if (fd < 0) {
+            print("[ftest] abrir /disk/HELLO.TXT FALLO: ");
+            print_num((u64)-fd);
+            print("\n");
+            return 1;
+        }
+
+        if (sys3(3, fd, 0, 0) != 0) {
+            print("[ftest] cerrar archivo FAT32 FALLO\n");
+            return 1;
+        }
+
+        long rc = sys3(87, (long)file, 0, 0);
+        if (rc != -30) {
+            print("[ftest] unlink FAT32 debería devolver EROFS: ");
+            print_num((u64)-rc);
+            print("\n");
+            return 1;
+        }
+
+        rc = sys3(83, (long)"/disk/NETHRATEST", 0755, 0);
+        if (rc != -30) {
+            print("[ftest] mkdir FAT32 debería devolver EROFS: ");
+            print_num((u64)-rc);
+            print("\n");
+            return 1;
+        }
+
+        rc = sys3(90, (long)file, 0600, 0);
+        if (rc != -30) {
+            print("[ftest] chmod FAT32 debería devolver EROFS\n");
+            return 1;
+        }
+
+        rc = sys3(92, (long)file, 1, 1);
+        if (rc != -30) {
+            print("[ftest] chown FAT32 debería devolver EROFS\n");
+            return 1;
+        }
+
+        print("[ftest] FAT32 permanece de solo lectura OK\n");
+    }
+
     print("[ftest] todo OK\n");
     return 0;
 }
