@@ -98,6 +98,82 @@ int nmain(int argc, char **argv)
         if (x != 5) { print("[ftest] fork: el hijo piso al padre\n"); return 1; }
         print("[ftest] fork OK\n");
     }
+
+    {
+        unsigned char st[144];
+        long euid = sys3(107, 0, 0, 0);
+        long egid = sys3(108, 0, 0, 0);
+
+        print("[ftest] fchmod/fchown por descriptor...\n");
+
+        long fd = sys3(2, (long)"/tmp/fdmeta-test",
+                       0100 | 2 | 01000, 0666);
+        if (fd < 0) {
+            print("[ftest] crear archivo FALLO\n");
+            return 1;
+        }
+
+        long rc = sys3(91, fd, 0640, 0);
+        if (rc != 0) {
+            print("[ftest] fchmod FALLO: ");
+            print_num((u64)-rc);
+            print("\n");
+            sys3(3, fd, 0, 0);
+            return 1;
+        }
+
+        rc = sys3(5, fd, (long)st, 0);
+        if (rc != 0 ||
+            ((*(unsigned int *)(st + 24)) & 07777u) != 0640u) {
+            print("[ftest] fstat tras fchmod FALLO\n");
+            sys3(3, fd, 0, 0);
+            return 1;
+        }
+        print("[ftest] fchmod + fstat OK\n");
+
+        if (euid == 0) {
+            rc = sys3(93, fd, 1000, 1000);
+            if (rc != 0) {
+                print("[ftest] fchown FALLO: ");
+                print_num((u64)-rc);
+                print("\n");
+                sys3(3, fd, 0, 0);
+                return 1;
+            }
+
+            rc = sys3(5, fd, (long)st, 0);
+            if (rc != 0 ||
+                *(unsigned int *)(st + 28) != 1000u ||
+                *(unsigned int *)(st + 32) != 1000u ||
+                ((*(unsigned int *)(st + 24)) & 07777u) != 0640u) {
+                print("[ftest] metadatos tras fchown FALLO\n");
+                sys3(3, fd, 0, 0);
+                return 1;
+            }
+            print("[ftest] fchown + propietario/grupo OK\n");
+        } else {
+            rc = sys3(93, fd, 0, 0);
+            if (rc != -1) {
+                print("[ftest] fchown sin privilegios: esperaba EPERM\n");
+                sys3(3, fd, 0, 0);
+                return 1;
+            }
+
+            rc = sys3(5, fd, (long)st, 0);
+            if (rc != 0 ||
+                *(unsigned int *)(st + 28) != (unsigned int)euid ||
+                *(unsigned int *)(st + 32) != (unsigned int)egid) {
+                print("[ftest] fchown modifico metadatos indebidamente\n");
+                sys3(3, fd, 0, 0);
+                return 1;
+            }
+            print("[ftest] fchown sin privilegios -> EPERM OK\n");
+        }
+
+        sys3(3, fd, 0, 0);
+        print("[ftest] prueba de metadatos OK\n");
+    }
+
     print("[ftest] todo OK\n");
     return 0;
 }

@@ -108,6 +108,60 @@ static int64_t t_lseek(struct file *f, int64_t off, int whence)
 
 static const struct file_ops t_ops = { t_read, t_write, 0, t_stat, t_lseek, 0, 0 };
 
+/* Devuelve 0 o el errno negativo. No modifica archivos de otros filesystems. */
+static int tmpfs_fd_node(struct file *f, struct tnode **out)
+{
+    if (!f || !f->ops) return -9; /* EBADF */
+
+    if (f->ops != &t_ops)
+        return f->ops->stat ? -30 : -22; /* EROFS o EINVAL */
+
+    struct tnode *t = f->priv;
+    if (!t || !t->used) return -22; /* EINVAL */
+
+    *out = t;
+    return 0;
+}
+
+int tmpfs_fchmod(struct file *f, uint32_t mode, uint32_t euid)
+{
+    struct tnode *t;
+    int rc = tmpfs_fd_node(f, &t);
+    if (rc < 0) return rc;
+
+    if (euid != 0 && euid != t->uid)
+        return -1; /* EPERM */
+
+    uint32_t bits = mode & 07777u;
+    if (euid != 0)
+        bits &= 0777u;
+
+    t->mode = (t->mode & 0170000u) | bits;
+    return 0;
+}
+
+int tmpfs_fchown(struct file *f, uint32_t uid, uint32_t gid,
+                 uint32_t euid)
+{
+    struct tnode *t;
+    int rc = tmpfs_fd_node(f, &t);
+    if (rc < 0) return rc;
+
+    if (euid != 0)
+        return -1; /* EPERM: política actual sin grupos suplementarios */
+
+    int changed = (uid != UINT32_MAX && uid != t->uid) ||
+                  (gid != UINT32_MAX && gid != t->gid);
+
+    if (uid != UINT32_MAX) t->uid = uid;
+    if (gid != UINT32_MAX) t->gid = gid;
+
+    if (changed)
+        t->mode &= ~06000u;
+
+    return 0;
+}
+
 struct file *tmpfs_open_as(const char *path, int flags,
                             uint32_t mode, uint32_t uid, uint32_t gid,
                             uint32_t mask, int *err)

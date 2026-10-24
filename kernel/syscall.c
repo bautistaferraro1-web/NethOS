@@ -666,6 +666,25 @@ static uint64_t sys_chown(uint64_t upath, uint64_t uid, uint64_t gid)
     return ERR(30);                    /* EROFS */
 }
 
+static uint64_t sys_fchmod(uint64_t fd, uint64_t mode)
+{
+    struct file *f = cur_fd(fd);
+    if (!f) return ERR(EBADF);
+
+    int rc = tmpfs_fchmod(f, (uint32_t)mode, task_proc()->euid);
+    return rc < 0 ? ERR(-rc) : 0;
+}
+
+static uint64_t sys_fchown(uint64_t fd, uint64_t uid, uint64_t gid)
+{
+    struct file *f = cur_fd(fd);
+    if (!f) return ERR(EBADF);
+
+    int rc = tmpfs_fchown(f, (uint32_t)uid, (uint32_t)gid,
+                          task_proc()->euid);
+    return rc < 0 ? ERR(-rc) : 0;
+}
+
 static uint64_t sys_lseek(uint64_t fd, uint64_t off, uint64_t whence)
 {
     struct file *f = cur_fd(fd);
@@ -1461,7 +1480,9 @@ void syscall_dispatch(struct regs *r)
     case 21:  r->rax = sys_access(r->rdi, r->rsi); break;
     case 269: r->rax = sys_access(r->rsi, r->rdx); break;
     case 90:  r->rax = sys_chmod(r->rdi, r->rsi); break;
+    case 91:  r->rax = sys_fchmod(r->rdi, r->rsi); break;
     case 92:  r->rax = sys_chown(r->rdi, r->rsi, r->rdx); break;
+    case 93:  r->rax = sys_fchown(r->rdi, r->rsi, r->rdx); break;
     case 94:  r->rax = sys_chown(r->rdi, r->rsi, r->rdx); break; /* lchown */
     case 260: r->rax = sys_chown(r->rsi, r->rdx, r->r10); break; /* fchownat */
     case 268: r->rax = sys_chmod(r->rsi, r->rdx); break;         /* fchmodat */
