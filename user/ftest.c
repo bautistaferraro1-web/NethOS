@@ -1039,6 +1039,104 @@ int nmain(int argc, char **argv)
         long euid = sys3(107, 0, 0, 0);
         if (euid == 0) {
             const char *path = "/hello.txt";
+            char saved[256], check[256];
+            const char replacement[] = "NEW-INODE";
+            long original = sys3(2, (long)path, 0, 0);
+            if (original < 0) {
+                print("[ftest] unlink-open: abrir original FALLO\n");
+                return 1;
+            }
+            long saved_n = sys3(0, original, (long)saved, sizeof saved);
+            long rc = sys3(3, original, 0, 0);
+            if (rc != 0 || saved_n <= 0 || saved_n >= (long)sizeof saved) {
+                print("[ftest] unlink-open: guardar original FALLO\n");
+                return 1;
+            }
+
+            /* O_RDWR fuerza copy-up y mantiene abierto el objeto superior. */
+            long held = sys3(2, (long)path, 2, 0);
+            if (held < 0) {
+                print("[ftest] unlink-open: abrir copy-up FALLO\n");
+                return 1;
+            }
+            if (sys3(87, (long)path, 0, 0) != 0) {
+                sys3(3, held, 0, 0);
+                print("[ftest] unlink-open: unlink con fd abierto FALLO\n");
+                return 1;
+            }
+
+            long absent = sys3(2, (long)path, 0, 0);
+            if (absent >= 0) {
+                sys3(3, absent, 0, 0);
+                sys3(3, held, 0, 0);
+                print("[ftest] unlink-open: nombre sigue visible FALLO\n");
+                return 1;
+            }
+            long no_create = sys3(2, (long)path, 1, 0);
+            if (no_create != -2) {
+                if (no_create >= 0) sys3(3, no_create, 0, 0);
+                sys3(3, held, 0, 0);
+                print("[ftest] unlink-open: open sin O_CREAT debería dar ENOENT\n");
+                return 1;
+            }
+
+            long fresh = sys3(2, (long)path, 0100 | 0200 | 1, 0600);
+            if (fresh < 0) {
+                sys3(3, held, 0, 0);
+                print("[ftest] unlink-open: recrear nombre FALLO\n");
+                return 1;
+            }
+            long wr = sys3(1, fresh, (long)replacement, sizeof replacement - 1);
+            rc = sys3(3, fresh, 0, 0);
+            if (wr != (long)(sizeof replacement - 1) || rc != 0) {
+                sys3(3, held, 0, 0);
+                print("[ftest] unlink-open: escribir archivo nuevo FALLO\n");
+                return 1;
+            }
+
+            if (sys3(8, held, 0, 0) != 0) {
+                sys3(3, held, 0, 0);
+                print("[ftest] unlink-open: lseek del descriptor viejo FALLO\n");
+                return 1;
+            }
+            long got = sys3(0, held, (long)check, sizeof check);
+            if (got != saved_n) {
+                sys3(3, held, 0, 0);
+                print("[ftest] unlink-open: descriptor viejo perdió el contenido\n");
+                return 1;
+            }
+            for (long i = 0; i < saved_n; i++) {
+                if (check[i] != saved[i]) {
+                    sys3(3, held, 0, 0);
+                    print("[ftest] unlink-open: inode viejo cambió al recrear\n");
+                    return 1;
+                }
+            }
+            if (sys3(3, held, 0, 0) != 0) {
+                print("[ftest] unlink-open: cerrar descriptor viejo FALLO\n");
+                return 1;
+            }
+
+            /* Restaurar contenido para que ftest pueda repetirse. */
+            fresh = sys3(2, (long)path, 1 | 01000, 0600);
+            if (fresh < 0) {
+                print("[ftest] unlink-open: abrir para restaurar FALLO\n");
+                return 1;
+            }
+            wr = sys3(1, fresh, (long)saved, (uint64_t)saved_n);
+            rc = sys3(3, fresh, 0, 0);
+            if (wr != saved_n || rc != 0) {
+                print("[ftest] unlink-open: restaurar original FALLO\n");
+                return 1;
+            }
+            print("[ftest] unlink con descriptor abierto y recreacion OK\n");
+        }
+    }
+
+    {
+        long euid = sys3(107, 0, 0, 0);
+        if (euid == 0) {
+            const char *path = "/hello.txt";
             char saved[256], check[256], dents[256];
             unsigned char st[144];
             long fd = sys3(2, (long)path, 0, 0);

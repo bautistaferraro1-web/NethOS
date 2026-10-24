@@ -22,7 +22,7 @@ struct tnode {
     uint64_t size, cap;
     int used;
     uint32_t mode, uid, gid;
-    uint8_t is_dir, shadow, whiteout;
+    uint8_t is_dir, shadow, whiteout, unlinked;
 };
 
 static struct tnode nodes[T_MAX];
@@ -41,7 +41,8 @@ static struct tnode *find(const char *path)
 {
     path = norm(path);
     for (int i = 0; i < T_MAX; i++)
-        if (nodes[i].used && seq(nodes[i].name, path)) return &nodes[i];
+        if (nodes[i].used && !nodes[i].unlinked &&
+            seq(nodes[i].name, path)) return &nodes[i];
     return 0;
 }
 
@@ -87,6 +88,7 @@ static struct tnode *node_alloc(const char *path, int is_dir, int shadow,
         t->is_dir = (uint8_t)(is_dir != 0);
         t->shadow = (uint8_t)(shadow != 0);
         t->whiteout = 0;
+        t->unlinked = 0;
         t->used = 1;
         return t;
     }
@@ -413,7 +415,8 @@ static int64_t t_getdents(struct file *f, void *buf, uint64_t n)
 
         struct tnode *child = &nodes[idx];
         const char *name = 0;
-        if (!child->used || child->shadow || child->whiteout || child == t ||
+        if (!child->used || child->unlinked || child->shadow ||
+            child->whiteout || child == t ||
             !direct_child(t->name, child->name, &name)) {
             cursor++;
             f->off = DIR_PHASE | cursor;
@@ -433,7 +436,47 @@ static int64_t t_getdents(struct file *f, void *buf, uint64_t n)
     }
 }
 
-static const struct file_ops t_ops = { t_read, t_write, 0, t_stat, t_lseek, t_getdents, 0 };
+/* Busca otros objetos struct file vivos que apunten al mismo nodo. */
+static int node_has_open_files(struct tnode *t, const struct file *except)
+{
+    for (int i = 0; i < T_POOL; i++) {
+        if (&pool[i] != except && pool[i].refcount > 0 && pool[i].priv == t)
+            return 1;
+    }
+    return 0;
+}
+
+/* El nombre puede desaparecer antes que la última referencia al objeto. */
+static int64_t t_close(struct file *f)
+{
+    struct tnode *t = f->priv;
+    f->priv = 0;
+
+    if (!t || !t->used || !t->unlinked || node_has_open_files(t, f))
+        return 0;
+
+    if (t->data) {
+        uint64_t g = irq_save();
+        kfree(t->data);
+        irq_restore(g);
+    }
+
+    t->data = 0;
+    t->size = 0;
+    t->cap = 0;
+    t->used = 0;
+    t->name[0] = 0;
+    t->mode = 0;
+    t->uid = 0;
+    t->gid = 0;
+    t->is_dir = 0;
+    t->shadow = 0;
+    t->whiteout = 0;
+    t->unlinked = 0;
+    return 0;
+}
+
+static const struct file_ops t_ops = { t_read, t_write, 0, t_stat, t_lseek, t_getdents, t_close };
 
 /* Devuelve 0 o el errno negativo. No modifica archivos de otros filesystems. */
 static int tmpfs_fd_node(struct file *f, struct tnode **out)
@@ -566,6 +609,11 @@ struct file *tmpfs_open_as(const char *path, int flags,
 
     struct tnode *t = find(path);
     int replacing_whiteout = t && t->whiteout;
+    /* A whiteout is absent; without O_CREAT the name stays absent. */
+    if (replacing_whiteout && !(flags & O_CREAT_)) {
+        *err = 2; /* ENOENT */
+        return 0;
+    }
     if (replacing_whiteout) {
         if (!(flags & O_CREAT_)) { *err = 2; return 0; } /* ENOENT */
         /* El nombre estaba eliminado: O_CREAT|O_EXCL debe poder recrearlo. */
@@ -748,8 +796,8 @@ int tmpfs_rmdir(const char *raw, uint32_t euid)
     if (euid != 0 && euid != t->uid) return -1; /* EPERM */
 
     for (int i = 0; i < T_MAX; i++) {
-        if (nodes[i].used && &nodes[i] != t &&
-            descendant_path(t->name, nodes[i].name))
+        if (nodes[i].used && !nodes[i].unlinked && !nodes[i].whiteout &&
+            &nodes[i] != t && descendant_path(t->name, nodes[i].name))
             return -39;         /* ENOTEMPTY */
     }
 
@@ -804,9 +852,20 @@ int tmpfs_unlink(const char *raw, uint32_t euid)
     if (t->shadow) return -30;  /* EROFS */
     if (euid != 0 && euid != t->uid) return -1; /* EPERM */
 
-    for (int i = 0; i < T_POOL; i++)
-        if (pool[i].refcount > 0 && pool[i].priv == t)
-            return -16;         /* EBUSY: política actual para archivos abiertos */
+    int lower_regular = initramfs_is_regular_nofollow(path) == 1;
+    int open = node_has_open_files(t, 0);
+
+    /* Mantener el objeto vivo; retirar por separado el nombre visible. */
+    if (open) {
+        if (lower_regular) {
+            /* Reservar el whiteout primero: si falla, no tocar el archivo. */
+            struct tnode *w = node_alloc(path, 0, 0, 0, 0, 0);
+            if (!w) return -28; /* ENOSPC */
+            w->whiteout = 1;
+        }
+        t->unlinked = 1;
+        return 0;
+    }
 
     if (t->data) {
         uint64_t g = irq_save();
@@ -817,14 +876,15 @@ int tmpfs_unlink(const char *raw, uint32_t euid)
     t->size = 0;
     t->cap = 0;
 
-    if (initramfs_is_regular_nofollow(path) == 1) {
-        /* La entrada inferior sigue existiendo: reemplazar el upper por whiteout. */
+    if (lower_regular) {
+        /* Sin referencias abiertas, reutilizar el upper como whiteout. */
         t->mode = 0;
         t->uid = 0;
         t->gid = 0;
         t->is_dir = 0;
         t->shadow = 0;
         t->whiteout = 1;
+        t->unlinked = 0;
         return 0;
     }
 
@@ -836,5 +896,6 @@ int tmpfs_unlink(const char *raw, uint32_t euid)
     t->is_dir = 0;
     t->shadow = 0;
     t->whiteout = 0;
+    t->unlinked = 0;
     return 0;
 }
