@@ -763,6 +763,79 @@ int nmain(int argc, char **argv)
             }
         }
 
+
+        {
+            const char *base_file = "/etc/hostname";
+            unsigned char base_st[144];
+
+            print("[ftest] archivo base bajo overlay tmpfs...\n");
+
+            /* El archivo original del initramfs debe seguir siendo legible. */
+            long basefd = sys3(2, (long)base_file, 0, 0);
+            if (basefd < 0) {
+                print("[ftest] abrir hostname con overlay FALLO: ");
+                print_num((u64)-basefd);
+                print("\n");
+                return 1;
+            }
+
+            long nr = sys3(0, basefd, (long)dbuf, sizeof dbuf);
+            if (sys3(3, basefd, 0, 0) != 0) {
+                print("[ftest] cerrar hostname con overlay FALLO\n");
+                return 1;
+            }
+
+            if (nr < 6 ||
+                dbuf[0] != 'n' || dbuf[1] != 'e' ||
+                dbuf[2] != 't' || dbuf[3] != 'h' ||
+                dbuf[4] != 'r' || dbuf[5] != 'a') {
+                print("[ftest] contenido original de hostname alterado\n");
+                return 1;
+            }
+
+            if (sys3(4, (long)base_file, (long)base_st, 0) != 0 ||
+                (*(uint32_t *)(base_st + 24) & 0170000u) != 0100000u) {
+                print("[ftest] stat de hostname bajo overlay FALLO\n");
+                return 1;
+            }
+
+            /* O_CREAT|O_EXCL sobre un archivo existente debe dar EEXIST. */
+            long op_rc = sys3(2, (long)base_file, 0100 | 0200 | 1, 0600);
+            if (op_rc != -17) {
+                print("[ftest] O_CREAT|O_EXCL sobre hostname debería dar EEXIST: ");
+                print_num((u64)-op_rc);
+                print("\n");
+                return 1;
+            }
+
+            if (sys3(90, (long)base_file, 0600, 0) != -30) {
+                print("[ftest] chmod del archivo base debería dar EROFS\n");
+                return 1;
+            }
+
+            if (sys3(92, (long)base_file, 1, 1) != -30) {
+                print("[ftest] chown del archivo base debería dar EROFS\n");
+                return 1;
+            }
+
+            /*
+             * unlink comprueba primero los permisos del directorio padre:
+             * root recibe EROFS; el usuario sin escritura en /etc recibe EACCES.
+             */
+            long urc = sys3(87, (long)base_file, 0, 0);
+            long uid = sys3(107, 0, 0, 0);
+            long want = uid == 0 ? -30 : -13;
+
+            if (urc != want) {
+                print("[ftest] unlink del archivo base devolvió error inesperado: ");
+                print_num((u64)-urc);
+                print("\n");
+                return 1;
+            }
+
+            print("[ftest] archivo base intacto y metadatos coherentes OK\n");
+        }
+
         long d = sys3(2, (long)"/etc", 0, 0);
         if (d < 0) {
             if (euid == 0) sys3(87, (long)overlay, 0, 0);
