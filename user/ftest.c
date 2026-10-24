@@ -434,6 +434,117 @@ int nmain(int argc, char **argv)
         print("[ftest] mkdir/rmdir y getdents OK\n");
     }
 
+
+    {
+        const char *root = "/tmp/ftest-nested-check";
+        const char *sub = "/tmp/ftest-nested-check/sub";
+        char cwd[128];
+
+        print("[ftest] directorios anidados y rutas relativas...\n");
+
+        /*
+         * Limpieza preventiva por si una ejecución anterior se interrumpió.
+         * Solo se usan nombres reservados para esta prueba.
+         */
+        sys3(87, (long)"/tmp/ftest-nested-check/sub/relative-check.txt", 0, 0);
+        sys3(84, (long)sub, 0, 0);
+        sys3(84, (long)root, 0, 0);
+
+        long rc = sys3(83, (long)root, 0700, 0);
+        if (rc != 0) {
+            print("[ftest] mkdir directorio padre FALLO: ");
+            print_num((u64)-rc);
+            print("\n");
+            return 1;
+        }
+
+        rc = sys3(83, (long)sub, 0700, 0);
+        if (rc != 0) {
+            print("[ftest] mkdir directorio hijo FALLO: ");
+            print_num((u64)-rc);
+            print("\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)root, 0, 0) != -39) {
+            print("[ftest] rmdir padre con subdirectorio: esperaba ENOTEMPTY\n");
+            return 1;
+        }
+
+        if (sys3(80, (long)sub, 0, 0) != 0) {
+            print("[ftest] chdir directorio anidado FALLO\n");
+            return 1;
+        }
+
+        long n = sys3(79, (long)cwd, sizeof cwd, 0);
+        if (n <= 0 || !ftest_name_eq(cwd, sub)) {
+            print("[ftest] getcwd en directorio anidado FALLO\n");
+            return 1;
+        }
+
+        long fd = sys3(2, (long)"relative-check.txt",
+                       0100 | 2 | 01000, 0600);
+        if (fd < 0) {
+            print("[ftest] crear archivo con ruta relativa FALLO: ");
+            print_num((u64)-fd);
+            print("\n");
+            return 1;
+        }
+
+        if (sys3(3, fd, 0, 0) != 0) {
+            print("[ftest] close archivo relativo FALLO\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)sub, 0, 0) != -16) {
+            print("[ftest] rmdir directorio actual: esperaba EBUSY\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)root, 0, 0) != -39) {
+            print("[ftest] rmdir padre no vacio: esperaba ENOTEMPTY\n");
+            return 1;
+        }
+
+        if (sys3(87, (long)"relative-check.txt", 0, 0) != 0) {
+            print("[ftest] unlink relativo FALLO\n");
+            return 1;
+        }
+
+        if (sys3(80, (long)"..", 0, 0) != 0) {
+            print("[ftest] chdir .. FALLO\n");
+            return 1;
+        }
+
+        n = sys3(79, (long)cwd, sizeof cwd, 0);
+        if (n <= 0 || !ftest_name_eq(cwd, root)) {
+            print("[ftest] getcwd tras chdir .. FALLO\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)sub, 0, 0) != 0) {
+            print("[ftest] rmdir subdirectorio vacio FALLO\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)root, 0, 0) != -16) {
+            print("[ftest] rmdir directorio actual padre: esperaba EBUSY\n");
+            return 1;
+        }
+
+        if (sys3(80, (long)"/", 0, 0) != 0) {
+            print("[ftest] volver a / FALLO\n");
+            return 1;
+        }
+
+        if (sys3(84, (long)root, 0, 0) != 0) {
+            print("[ftest] rmdir directorio padre vacio FALLO\n");
+            return 1;
+        }
+
+        print("[ftest] directorios anidados y rutas relativas OK\n");
+    }
+
     print("[ftest] todo OK\n");
     return 0;
 }
